@@ -620,7 +620,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // Self-test: WindowsEQ.exe --render-png out.png [width height [seconds [mx my]]]
 // renders the real UI off-screen for a while (router running, analyzer fed)
 // and saves the last frame. Used to check the layout without a desktop.
-int renderToPng(const std::wstring& path, int w, int h, double seconds, float mx, float my)
+int renderToPng(const std::wstring& path, int w, int h, double seconds, float mx, float my, bool route)
 {
     ComPtr<IWICImagingFactory> wic;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))))
@@ -635,7 +635,7 @@ int renderToPng(const std::wstring& path, int w, int h, double seconds, float mx
     if (FAILED(g.d2d->CreateWicBitmapRenderTarget(bmp.Get(), props, &rt)))
         return 2;
     g.ui.setTarget(rt.Get());
-    g.appReady = g.app.init(nullptr);
+    g.appReady = g.app.init(nullptr, route);
     const int frames = std::max(1, static_cast<int>(seconds * 60));
     for (int i = 0; i < frames; ++i) {
         g.ui.in.mx = mx;
@@ -764,7 +764,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         const double secs = argc >= 6 ? _wtof(argv[5]) : 1.5;
         const float mx = argc >= 8 ? static_cast<float>(_wtof(argv[6])) : -1.0f;
         const float my = argc >= 8 ? static_cast<float>(_wtof(argv[7])) : -1.0f;
-        return renderToPng(argv[2], w, h, secs, mx, my);
+        return renderToPng(argv[2], w, h, secs, mx, my, !hasArg(argc, argv, L"--demo"));
     }
     const bool startInTray = hasArg(argc, argv, L"--tray");
 

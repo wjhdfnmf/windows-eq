@@ -14,7 +14,8 @@ namespace gui {
 
 class App {
 public:
-    bool init(HWND hwnd);
+    // route = false: preview only (screenshots); no audio devices are opened.
+    bool init(HWND hwnd, bool route = true);
     void shutdown();
     // One UI frame: logic, layout and drawing (inside BeginDraw/EndDraw).
     void frame(Ui& ui, double dtSec);
@@ -83,6 +84,7 @@ private:
     HWND hwnd_ = nullptr;
 
     // routing
+    bool route_ = true;
     weq::Router router_;
     bool routerStarted_ = false;
     double retryIn_ = 0;

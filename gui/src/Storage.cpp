@@ -10,6 +10,13 @@ namespace gui {
 
 std::wstring appDataDir()
 {
+    // WEQ_DATA_DIR overrides the settings folder (tests, screenshots, profiles).
+    wchar_t env[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"WEQ_DATA_DIR", env, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        CreateDirectoryW(env, nullptr);
+        return env;
+    }
     wchar_t* path = nullptr;
     std::wstring dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &path)) && path)

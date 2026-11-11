@@ -84,9 +84,10 @@ double App::idleFrameInterval() const
 
 // ================================================================== lifecycle
 
-bool App::init(HWND hwnd)
+bool App::init(HWND hwnd, bool route)
 {
     hwnd_ = hwnd;
+    route_ = route;
     analysisBuf_.resize(32768 * 2);
 
     analyzerMode_ = std::clamp(_wtoi(configGet(L"analyzer", L"0").c_str()), 0, 2);
@@ -117,7 +118,8 @@ bool App::init(HWND hwnd)
     rebuildPresetList();
     refreshDevices(true);
     publish();
-    startRouter();
+    if (route_)
+        startRouter();
     return true;
 }
 
@@ -236,6 +238,8 @@ void App::stopRouter()
 
 void App::pollRouter(double dt)
 {
+    if (!route_)
+        return;
     if (routerStarted_ && router_.failed()) {
         routerError_ = router_.failure();
         stopRouter();
@@ -658,7 +662,7 @@ int App::showMenu(POINT pt, bool fromTray)
         const std::wstring msg = std::wstring(L"Windows EQ ") + WEQ_VERSION_WSTR +
                                  L"\n\nSystem-wide parametric EQ: Windows audio → VB-Cable → EQ → "
                                  L"your output device.\n\nSettings and presets: " +
-                                 appDataDir();
+                                 appDataDir() + L"\n\nOpen source under the MIT License.";
         MessageBoxW(hwnd_, msg.c_str(), L"About Windows EQ", MB_ICONINFORMATION);
     } else if (cmd == kUninstall) {
         ShellExecuteW(nullptr, L"open", weq::install::installedExePath().c_str(), L"--uninstall", nullptr,
@@ -754,6 +758,8 @@ void App::frame(Ui& ui, double dt)
 
 std::wstring App::bannerText() const
 {
+    if (!route_)
+        return L"";
     if (!cableInstalled_)
         return L"VB-Cable isn't installed. Install it from vb-audio.com/Cable, then choose \"CABLE Input\" as the "
                L"Windows output.";
@@ -1521,6 +1527,9 @@ void App::drawStatusBar(Ui& ui, Rect r)
     } else if (routerStarted_) {
         dot = col::warn;
         state = L"Starting…";
+    } else if (!route_) {
+        dot = col::textFaint;
+        state = L"Preview (audio routing off)";
     } else {
         state = L"Stopped";
     }
