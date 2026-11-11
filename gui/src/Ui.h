@@ -99,6 +99,7 @@ public:
     void endFrame();
 
     Input in;
+    bool skipText = false; // benchmark switch: measure the cost of text
 
     // ---- drawing
     ID2D1RenderTarget* rt() const { return rt_; }

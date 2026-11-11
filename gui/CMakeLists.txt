@@ -13,7 +13,7 @@ add_executable(WindowsEQ WIN32
 )
 target_include_directories(WindowsEQ PRIVATE ${CMAKE_SOURCE_DIR}/common/include)
 target_link_libraries(WindowsEQ PRIVATE weqrouter weqinstall d2d1 dwrite dwmapi comdlg32 comctl32 shell32 shlwapi
-    windowscodecs dbghelp)
+    windowscodecs dbghelp wtsapi32 pdh d3d11 dxgi)
 # Ship a symbol file next to the exe (not in the installer) so crash dumps
 # from release builds can be read. /OPT:REF,ICF keep the code identical to a
 # build without symbols.

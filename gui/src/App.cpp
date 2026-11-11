@@ -76,10 +76,19 @@ std::wstring fmt(const wchar_t* f, double v)
 
 double App::rangeDb() const { return kRanges[std::clamp(rangeSel_, 0, 3)]; }
 
-double App::idleFrameInterval() const
+double App::idleFrameInterval(bool foreground) const
 {
-    const bool audio = analyzer_.hasSignal() || meterDb_[0] > -90 || meterDb_[1] > -90 || limitFlash_ > 0;
-    return audio ? 1.0 / 30.0 : 1.0 / 10.0;
+    // Moving content: the analyzer (while audio plays) and the meters. Rates
+    // halve when the window is visible but not the active one.
+    const bool spectrum = analyzerMode_ != 2 && analyzer_.hasSignal();
+    const bool meters = meterDb_[0] > -90 || meterDb_[1] > -90 || limitFlash_ > 0;
+    // Each presented frame has a fixed GPU cost that dominates on many
+    // systems, so these are as low as still looks smooth.
+    if (spectrum)
+        return foreground ? 1.0 / 24.0 : 1.0 / 12.0;
+    if (meters)
+        return foreground ? 1.0 / 15.0 : 1.0 / 8.0;
+    return 1.0 / 2.0; // nothing moving: status bar only
 }
 
 // ================================================================== lifecycle
@@ -277,6 +286,8 @@ void App::pollAnalysis(double dt, bool visible)
         if (analyze)
             analyzer_.push(analysisBuf_.data(), n);
     }
+    if (analyze && demoSignal_)
+        feedDemoSignal(dt);
     if (analyze)
         analyzer_.update(dt);
 
@@ -295,6 +306,38 @@ void App::pollAnalysis(double dt, bool visible)
     if (lim < -0.1)
         limitFlash_ = 0.6;
     limitFlash_ = std::max(0.0, limitFlash_ - dt);
+}
+
+void App::feedDemoSignal(double dt)
+{
+    const double fs = sampleRate();
+    if (!demoEqReady_) {
+        demoEq_.prepare(fs, 1);
+        demoEqReady_ = true;
+    }
+    EqSettings eqs = s_;
+    eqs.bypass = bypass_ ? 1u : 0u;
+    demoEq_.setSettings(eqs);
+    const size_t n = std::min(static_cast<size_t>(dt * fs), analysisBuf_.size() / 2);
+    std::vector<float> in(n), out(n);
+    for (size_t i = 0; i < n; ++i) {
+        // Roughly pink noise (two one-pole low-passes of white noise) plus a
+        // bass line, so the display looks like music.
+        demoRng_ = demoRng_ * 1664525u + 1013904223u;
+        const float white = static_cast<float>(static_cast<int32_t>(demoRng_)) / 2147483648.0f;
+        demoLp_[0] += (white - demoLp_[0]) * 0.02f;
+        demoLp_[1] += (white - demoLp_[1]) * 0.3f;
+        demoPhase_ += 2 * 3.14159265358979 * 82.4 / fs;
+        in[i] = 0.25f * demoLp_[0] * 6 + 0.05f * demoLp_[1] + 0.12f * static_cast<float>(std::sin(demoPhase_));
+    }
+    if (demoPhase_ > 1e6)
+        demoPhase_ = std::fmod(demoPhase_, 2 * 3.14159265358979);
+    demoEq_.process(in.data(), out.data(), static_cast<int>(n));
+    for (size_t i = 0; i < n; ++i) {
+        analysisBuf_[2 * i] = in[i];
+        analysisBuf_[2 * i + 1] = out[i];
+    }
+    analyzer_.push(analysisBuf_.data(), n);
 }
 
 // ================================================================== EQ model
@@ -728,14 +771,20 @@ void App::frame(Ui& ui, double dt)
     const Rect graph{pad, mainY, W - 2 * pad - sideW - 12, band.y - 10 - mainY};
     const Rect side{graph.r() + 12, mainY, sideW, graph.h};
 
-    drawTopBar(ui, top);
-    drawToolbar(ui, tool);
+    if (!(benchSkip_ & 8)) {
+        drawTopBar(ui, top);
+        drawToolbar(ui, tool);
+    }
     if (!banner.empty())
         drawBanner(ui, bannerR);
-    drawGraph(ui, graph);
-    drawSide(ui, side);
-    drawBandPanel(ui, band);
-    drawStatusBar(ui, status);
+    if (!(benchSkip_ & 1))
+        drawGraph(ui, graph);
+    if (!(benchSkip_ & 2))
+        drawSide(ui, side);
+    if (!(benchSkip_ & 4))
+        drawBandPanel(ui, band);
+    if (!(benchSkip_ & 8))
+        drawStatusBar(ui, status);
 
     // ---- undo bookkeeping: a mouse gesture is one step; other changes
     // (wheel, typing) coalesce for 0.8 s.
@@ -1033,7 +1082,9 @@ void App::drawGraph(Ui& ui, Rect g)
     ui.fill(g, col::panel, 10);
     ui.stroke(g, col::border, 10);
     const Rect plot = g.inset(1);
-    ui.rt()->PushAxisAlignedClip(plot.d2d(), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    // Aliased (pixel-snapped) clip: an anti-aliased clip can make Direct2D
+    // render the whole graph through an extra offscreen layer every frame.
+    ui.rt()->PushAxisAlignedClip(plot.d2d(), D2D1_ANTIALIAS_MODE_ALIASED);
 
     const double range = rangeDb();
     const float padY = 18;

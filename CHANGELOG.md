@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.0.2 (2026-11-11)
+
+### Fixed
+
+- **GPU and CPU use while the window isn't visible:** the app kept redrawing
+  about 30 times a second when its window was covered by other windows, on
+  another virtual desktop, behind the lock screen, or with the display off.
+  It now draws nothing in all those cases, as it already did when minimized
+  or in the tray. Measured: 8.8% GPU and 7.5% CPU covered before, 0% after.
+- **Silent updates restart the app:** `WindowsEQ-Setup.exe --silent` now
+  restarts Windows EQ if it was running, in the window or in the tray.
+  Before, it left the PC without audio until the app was started again.
+
+### Improved
+
+- **Much lower GPU use while visible:** rendering now uses Direct3D 11 with a
+  flip-model swap chain and a Direct2D 1.1 device context, instead of the
+  older window render target, which copied the whole window every frame.
+  Frame rates now adapt to what's on screen:
+  - analyzer while audio plays: 24 fps, or 12 fps when the window isn't
+    active;
+  - meters only: 15 / 8 fps;
+  - idle: 2 fps.
+
+  With music playing and the window visible: GPU went from 13–25% to 2–3%,
+  and CPU from 4–6% to about 2%.
+
+### Added
+
+- **Benchmark mode:** `WindowsEQ.exe --bench out.txt` measures the rendering
+  cost, including GPU utilisation at real frame rates.
+
 ## 1.0.1 (2026-11-10)
 
 ### Fixed

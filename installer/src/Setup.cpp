@@ -2,7 +2,8 @@
 // resource. No administrator rights needed.
 //
 //   WindowsEQ-Setup.exe                    interactive
-//   WindowsEQ-Setup.exe --silent [--autostart | --no-autostart]   (updates keep the current choice)
+//   WindowsEQ-Setup.exe --silent [--autostart | --no-autostart]
+//       (updates keep the current sign-in choice and restart a running app)
 //   WindowsEQ-Setup.exe --extract-only DIR   (testing: just write the payload)
 
 #include "AudioDevices.h"
@@ -81,8 +82,17 @@ bool extractPayload(const std::wstring& path, DWORD& sizeOut, std::wstring& erro
     return true;
 }
 
-bool install(bool autostart, std::wstring& error)
+struct RunningState {
+    bool running = false, hidden = false;
+};
+
+bool install(bool autostart, std::wstring& error, RunningState* before = nullptr)
 {
+    if (before) {
+        HWND w = FindWindowW(inst::kMainWindowClass, nullptr);
+        before->running = w != nullptr;
+        before->hidden = w && !IsWindowVisible(w);
+    }
     if (!inst::closeRunningInstance(8000)) {
         error = L"Windows EQ is running and didn't close. Quit it from its tray icon and try again.";
         return false;
@@ -196,7 +206,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
                                : inst::isInstalled()                   ? inst::autostartEnabled()
                                                                        : true;
         std::wstring error;
-        rc = install(autostart, error) ? 0 : 2;
+        RunningState before;
+        rc = install(autostart, error, &before) ? 0 : 2;
+        // An update must not leave the user without audio: restart the app
+        // if it was running, the way it was (window or tray).
+        if (rc == 0 && before.running)
+            ShellExecuteW(nullptr, L"open", inst::installedExePath().c_str(), before.hidden ? L"--tray" : nullptr,
+                          nullptr, SW_SHOWNORMAL);
     } else {
         rc = interactive();
     }

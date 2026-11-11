@@ -24,11 +24,13 @@ rights to install.
 - **No clipping:** an **Auto preamp**, a safety limiter and output meters.
 - **Runs in the tray:** closing the window keeps the EQ running. It can
   start with Windows.
-- **High quality, low CPU:**
+- **High quality, light on CPU and GPU:**
   - 64-bit filter maths;
   - click-free parameter changes;
   - a bit-exact passthrough when the EQ is flat;
-  - about 2% of one CPU core in total.
+  - about 2% of one CPU core in total;
+  - a few percent of the GPU while the window is visible, and nothing at
+    all while it's hidden, covered or minimized.
 
 ## Requirements
 
@@ -180,7 +182,8 @@ Tests:
 build/tests/Release/eqdsp_tests.exe      # DSP, resampler, drift controller, preset parser
 build/tests/Release/analyzer_test.exe    # spectrum analyzer
 build/tests/Release/apo_smoke.exe        # APO COM/aggregation smoke test
-build/tests/Release/eqdsp_bench.exe      # CPU benchmark
+build/tests/Release/eqdsp_bench.exe      # DSP CPU benchmark
+build/gui/Release/WindowsEQ.exe --bench bench.txt   # UI rendering benchmark (CPU and GPU)
 ```
 
 `tools/check-install.ps1` reports the state of an installed copy.

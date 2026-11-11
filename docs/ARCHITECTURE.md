@@ -113,9 +113,31 @@ the first ~40 s.
   - 8192-point FFT with a Hann window, at most 35 transforms per second;
   - smoothing in the power domain;
   - +3 dB/octave display tilt around 1 kHz.
-- **Frame rate:** 60 fps while you interact, 30 fps while audio plays, 10 fps
-  when idle. Nothing is drawn while the window is hidden in the tray, where
-  routing is ticked 4 times a second instead.
+- **Rendering backend:** Direct3D 11 device → DXGI **flip-model** swap chain
+  (`FLIP_DISCARD`, 2 buffers) → Direct2D 1.1 device context drawing into the
+  back buffer, presented with vsync. If no GPU is available it falls back to
+  WARP (software rendering).
+  - On the dev machine most of the GPU cost was per presented frame, and the
+    content added comparatively little.
+  - The older `ID2D1HwndRenderTarget` (blt model) copied the whole window
+    every frame and used roughly 2.5× the GPU.
+- **Frame rate:**
+  - **60 fps** while you interact;
+  - **24 fps** for the analyzer while audio plays (12 fps when the window
+    isn't the active one);
+  - **15 / 8 fps** for meters only;
+  - **2 fps** when idle.
+- **Not visible means not drawn:** no frames at all while the window is
+  hidden in the tray, minimized, cloaked (another virtual desktop), fully
+  covered, behind the lock screen (`WTSRegisterSessionNotification`) or with
+  the display off (`GUID_CONSOLE_DISPLAY_STATE`).
+  - Coverage is checked every 0.25 s by subtracting the frame bounds of the
+    visible, opaque top-level windows above it in z-order from the client
+    rectangle. Layered and click-through windows never count as covering.
+  - Routing keeps being ticked 4 times a second.
+- **`--bench out.txt [frames]`:** renders a test window with demo audio. It
+  reports the CPU per frame with vsync off, and this process's GPU 3D-engine
+  utilisation (PDH counter) at fixed frame rates with vsync on.
 - **Settings:** stored in `%APPDATA%\WindowsEQ` (override with `WEQ_DATA_DIR`).
   - `eq.txt` holds the live EQ, in Equalizer APO format. It's saved 0.4 s
     after a change and reloaded if another program edits it.
@@ -158,7 +180,8 @@ the first ~40 s.
   waits for it to exit, replaces the exe atomically, and starts it again.
 - **Command line:**
   - `--silent [--autostart | --no-autostart]` installs without a dialog. An
-    update keeps the current sign-in choice unless a flag is given.
+    update keeps the current sign-in choice unless a flag is given, and
+    restarts the app if it was running, in the window or in the tray.
   - `--extract-only DIR` just writes the payload (for testing).
 
 ## Experimental: system-effect APO (`apo/`, `setup/`)

@@ -266,7 +266,7 @@ void Ui::circleStroke(float cx, float cy, float radius, D2D1_COLOR_F c, float wi
 
 void Ui::text(const std::wstring& s, Rect r, D2D1_COLOR_F c, Font f, Align a)
 {
-    if (s.empty() || r.w <= 0)
+    if (s.empty() || r.w <= 0 || skipText)
         return;
     IDWriteTextFormat* fmt = format(f);
     fmt->SetTextAlignment(a == Align::Left     ? DWRITE_TEXT_ALIGNMENT_LEADING

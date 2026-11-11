@@ -5,6 +5,7 @@
 
 #include "AudioDevices.h"
 #include "Router.h"
+#include "eqdsp/Equalizer.h"
 #include "eqdsp/Types.h"
 
 #include <string>
@@ -24,7 +25,7 @@ public:
     void runDeferred();
     // How often to redraw when the user isn't interacting: fast enough for
     // the analyzer while audio plays, slow when idle.
-    double idleFrameInterval() const;
+    double idleFrameInterval(bool foreground) const;
     // Routing, autosave and file watching; called by frame(), and on a timer
     // while the window is hidden in the tray (visible = false skips the FFT).
     void tick(double dtSec, bool visible);
@@ -43,6 +44,14 @@ public:
     // Posted to the main window: quit, asking first if audio would stop.
     static constexpr UINT kMsgQuitAsk = WM_APP + 22;
     int showMenu(POINT screenPt, bool fromTray);
+
+    // ---- benchmarks / previews
+    // Feeds the analyzer synthetic music-like noise (run through the current
+    // EQ for the "after" trace) instead of the router's audio.
+    void setDemoSignal(bool on) { demoSignal_ = on; }
+    void setAnalyzerMode(int mode) { analyzerMode_ = mode; }
+    // Benchmark: skip drawing sections (bit 0 graph, 1 side, 2 bands, 3 bars).
+    void setBenchSkip(unsigned mask) { benchSkip_ = mask; }
 
 private:
     enum class Deferred { None, Import, Export, DeletePreset, ConfirmOverwrite, OpenSoundSettings, SettingsMenu };
@@ -84,6 +93,16 @@ private:
     void updateCurves(Rect g);
 
     HWND hwnd_ = nullptr;
+
+    // demo signal (benchmarks, previews)
+    bool demoSignal_ = false;
+    unsigned benchSkip_ = 0;
+    eqdsp::Equalizer demoEq_;
+    bool demoEqReady_ = false;
+    uint32_t demoRng_ = 12345;
+    float demoLp_[2] = {0, 0};
+    double demoPhase_ = 0;
+    void feedDemoSignal(double dt);
 
     // routing
     bool route_ = true;
