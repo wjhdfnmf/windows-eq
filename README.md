@@ -186,7 +186,13 @@ build/tests/Release/eqdsp_bench.exe      # DSP CPU benchmark
 build/gui/Release/WindowsEQ.exe --bench bench.txt   # UI rendering benchmark (CPU and GPU)
 ```
 
-`tools/check-install.ps1` reports the state of an installed copy.
+Scripts in `tools/`:
+
+| Script | What it does |
+|---|---|
+| `check-install.ps1` | Reports the state of an installed copy |
+| `eval-resources.ps1` | Checks the running app's frame rate, GPU and CPU in five window states. Play some audio first |
+| `zorder-check.ps1` | Shows which windows are above Windows EQ and whether they count as covering it |
 
 ## License
 

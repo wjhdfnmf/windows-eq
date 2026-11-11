@@ -13,24 +13,48 @@
   restarts Windows EQ if it was running, in the window or in the tray.
   Before, it left the PC without audio until the app was started again.
 
+- **Covering detection for browser-style apps:** apps built on
+  Chromium/Electron (browsers, the Claude app, VS Code…) mark their windows
+  as "layered" even though they're fully opaque. Windows EQ treated those as
+  see-through and kept drawing underneath them. They now count as covering
+  when Windows reports them fully opaque.
+
 ### Improved
 
-- **Much lower GPU use while visible:** rendering now uses Direct3D 11 with a
-  flip-model swap chain and a Direct2D 1.1 device context, instead of the
-  older window render target, which copied the whole window every frame.
-  Frame rates now adapt to what's on screen:
-  - analyzer while audio plays: 24 fps, or 12 fps when the window isn't
-    active;
+- **Lower CPU:** about 3.6× less CPU per frame.
+  - Text layouts are cached instead of rebuilt every frame.
+  - The clipping check behind the Auto button is computed only when the EQ
+    changes; it was about 20,000 filter evaluations per frame.
+  - EQ curve paths are cached.
+- **Adaptive frame rates:**
+  - analyzer while audio plays: 24 fps, or 12 fps when the window isn't the
+    active one;
   - meters only: 15 / 8 fps;
   - idle: 2 fps.
+- **Measured on the dev machine** (music playing, 5-band EQ, standard
+  renderer):
 
-  With music playing and the window visible: GPU went from 13–25% to 2–3%,
-  and CPU from 4–6% to about 2%.
+  | Window state | FPS | GPU | CPU |
+  |---|---|---|---|
+  | Visible and active | 22 | 4.0% | ~4% |
+  | Visible, not active | 11 | 2.0% | 1.6% |
+  | Covered or minimized | 0 | 0% | ~0.2% (audio routing only) |
+
+  `tools/eval-resources.ps1` reproduces these checks.
 
 ### Added
 
+- **Low-GPU renderer, experimental, off by default:** Direct3D 11 with a
+  flip-model swap chain. It needs well under half the GPU per frame.
+  - **Why it's off by default:** a system crash (DPC_WATCHDOG_VIOLATION, a
+    kernel driver timeout; the dump was inconclusive) happened while it was
+    being stress-tested. It may be unrelated, because that system's graphics
+    stack was already behaving abnormally before the crash.
+  - **Turning it on:** gear menu → *Low-GPU renderer (experimental)*.
 - **Benchmark mode:** `WindowsEQ.exe --bench out.txt` measures the rendering
   cost, including GPU utilisation at real frame rates.
+- **Diagnostics:** a `WindowsEQ.Diagnostics` window message reports frames
+  drawn and audio/routing/visibility state, for automated tests.
 
 ## 1.0.1 (2026-11-10)
 

@@ -76,6 +76,19 @@ std::wstring fmt(const wchar_t* f, double v)
 
 double App::rangeDb() const { return kRanges[std::clamp(rangeSel_, 0, 3)]; }
 
+// Largest boost of the current EQ. Scanning the response is ~20k filter
+// evaluations, so it's only redone when the settings or sample rate change.
+double App::cachedMaxBoost()
+{
+    const double fs = sampleRate();
+    if (boostFs_ != fs || !sameSettings(boostKey_, s_)) {
+        boostKey_ = s_;
+        boostFs_ = fs;
+        boostDb_ = eqdsp::maxBoostDb(s_, 2, fs);
+    }
+    return boostDb_;
+}
+
 double App::idleFrameInterval(bool foreground) const
 {
     // Moving content: the analyzer (while audio plays) and the meters. Rates
@@ -352,6 +365,7 @@ void App::publish()
 
 void App::onSettingsChanged()
 {
+    ++settingsChanges_;
     publish();
     saveIn_ = 0.4;
     modified_ = true;
@@ -652,7 +666,7 @@ unsigned App::stateKey() const
 
 int App::showMenu(POINT pt, bool fromTray)
 {
-    enum { kOpen = 100, kEq, kAutostart, kCloseToTray, kSound, kAbout, kUninstall, kQuit, kPreset0 = 1000 };
+    enum { kOpen = 100, kEq, kAutostart, kCloseToTray, kSound, kAbout, kUninstall, kQuit, kRenderer, kPreset0 = 1000 };
     HMENU menu = CreatePopupMenu();
     HMENU presets = CreatePopupMenu();
     for (size_t i = 0; i < presetItems_.size() && i < 500; ++i)
@@ -670,6 +684,8 @@ int App::showMenu(POINT pt, bool fromTray)
                 L"Start with Windows (in the tray)");
     AppendMenuW(menu, MF_STRING | (configGet(L"closeToTray", L"1") != L"0" ? MF_CHECKED : 0), kCloseToTray,
                 L"Keep running in the tray when closed");
+    AppendMenuW(menu, MF_STRING | (configGet(L"renderer", L"legacy") == L"flip" ? MF_CHECKED : 0), kRenderer,
+                L"Low-GPU renderer (experimental)");
     AppendMenuW(menu, MF_STRING, kSound, L"Windows Sound settings…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kAbout, L"About Windows EQ");
@@ -699,6 +715,16 @@ int App::showMenu(POINT pt, bool fromTray)
             MessageBoxW(hwnd_, L"Could not change the sign-in setting.", L"Windows EQ", MB_ICONWARNING);
     } else if (cmd == kCloseToTray) {
         configSet(L"closeToTray", configGet(L"closeToTray", L"1") != L"0" ? L"0" : L"1");
+    } else if (cmd == kRenderer) {
+        const bool flip = configGet(L"renderer", L"legacy") != L"flip";
+        if (flip && MessageBoxW(hwnd_,
+                                L"The low-GPU renderer uses noticeably less graphics power, but a system crash "
+                                L"happened once while it was being tested and the cause isn't known yet.\n\n"
+                                L"Use it anyway?",
+                                L"Windows EQ", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+            return result;
+        configSet(L"renderer", flip ? L"flip" : L"legacy");
+        PostMessageW(hwnd_, kMsgRendererChanged, 0, 0);
     } else if (cmd == kSound) {
         ShellExecuteW(hwnd_, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL);
     } else if (cmd == kAbout) {
@@ -1031,6 +1057,7 @@ void App::drawBanner(Ui& ui, Rect r)
 void App::updateCurves(Rect g)
 {
     if (!(g.w >= 2.0f)) { // also catches NaN
+        geoValid_ = false;
         curveL_.assign(2, 0.0f);
         curveR_.assign(2, 0.0f);
         bandCurves_.assign(s_.numBands, std::vector<float>(2, 0.0f));
@@ -1040,6 +1067,8 @@ void App::updateCurves(Rect g)
     const double fs = sampleRate();
     if (curveX_ == g.x && curveW_ == g.w && curveFs_ == fs && sameSettings(curveKey_, s_))
         return;
+    geoValid_ = false; // curves change: the cached paths are stale
+    ++curveRebuilds_;
     curveKey_ = s_;
     curveFs_ = fs;
     curveX_ = g.x;
@@ -1179,49 +1208,55 @@ void App::drawGraph(Ui& ui, Rect g)
                     Rect{g.x, g.y + g.h * 0.72f, g.w, 20}, col::textFaint, Font::Small, Align::Center);
     }
 
-    // ---- EQ curves
+    // ---- EQ curves (path geometries are cached; they only change when the
+    // settings, the graph's position/size or the dB range change)
     updateCurves(g);
     const int n = static_cast<int>(curveL_.size());
-    auto curvePts = [&](const std::vector<float>& c, double offset) {
+    auto curvePts = [&](const std::vector<float>& c) {
         std::vector<D2D1_POINT_2F> pts;
-        pts.reserve(n);
+        pts.reserve(n + 2);
         for (int i = 0; i < n; ++i)
             pts.push_back(D2D1::Point2F(std::min(g.x + i * kColStep, g.r()),
-                                        std::clamp(yOf(c[i] + offset), g.y - 4, g.b() + 4)));
+                                        std::clamp(yOf(c[i]), g.y - 4, g.b() + 4)));
         return pts;
     };
     const float y0 = yOf(0);
-    for (uint32_t b = 0; b < s_.numBands; ++b) {
+    if (!geoValid_ || geoY_ != g.y || geoH_ != g.h || geoRange_ != range) {
+        geoValid_ = true;
+        geoY_ = g.y;
+        geoH_ = g.h;
+        geoRange_ = range;
+        bandGeo_.assign(bandCurves_.size(), CurveGeo{});
+        for (size_t b = 0; b < bandCurves_.size(); ++b)
+            bandGeo_[b].line = makePath(ui.factory(), curvePts(bandCurves_[b]), false);
+        geoL_ = makePath(ui.factory(), curvePts(curveL_), false);
+        geoR_ = stereoDiffers_ ? makePath(ui.factory(), curvePts(curveR_), false) : nullptr;
+    }
+    for (uint32_t b = 0; b < s_.numBands && b < bandGeo_.size(); ++b) {
         const bool selected = static_cast<int>(b) == sel_;
         if (!s_.bands[b].enabled && !selected)
             continue;
-        auto pts = curvePts(bandCurves_[b], 0);
         const D2D1_COLOR_F c = bandColor(static_cast<int>(b));
         if (selected) {
-            auto area = pts;
-            area.push_back(D2D1::Point2F(g.r(), y0));
-            area.push_back(D2D1::Point2F(g.x, y0));
-            auto geo = makePath(ui.factory(), area, true);
-            if (geo)
-                ui.rt()->FillGeometry(geo.Get(), ui.brush(withAlpha(c, 0.16f)));
+            if (!bandGeo_[b].fill) {
+                auto area = curvePts(bandCurves_[b]);
+                area.push_back(D2D1::Point2F(g.r(), y0));
+                area.push_back(D2D1::Point2F(g.x, y0));
+                bandGeo_[b].fill = makePath(ui.factory(), area, true);
+            }
+            if (bandGeo_[b].fill)
+                ui.rt()->FillGeometry(bandGeo_[b].fill.Get(), ui.brush(withAlpha(c, 0.16f)));
         }
-        auto geo = makePath(ui.factory(), pts, false);
-        if (geo)
-            ui.rt()->DrawGeometry(geo.Get(), ui.brush(withAlpha(c, selected ? 0.9f : 0.35f)), selected ? 1.5f : 1.0f,
-                                  s_.bands[b].enabled ? nullptr : ui.dashed());
+        if (bandGeo_[b].line)
+            ui.rt()->DrawGeometry(bandGeo_[b].line.Get(), ui.brush(withAlpha(c, selected ? 0.9f : 0.35f)),
+                                  selected ? 1.5f : 1.0f, s_.bands[b].enabled ? nullptr : ui.dashed());
     }
     const float curveAlpha = bypass_ ? 0.35f : 1.0f;
-    if (stereoDiffers_) {
-        auto geo = makePath(ui.factory(), curvePts(curveR_, 0), false);
-        if (geo)
-            ui.rt()->DrawGeometry(geo.Get(), ui.brush(rgb(0xFFB547, 0.8f * curveAlpha)), 1.6f, ui.dashed());
-    }
-    {
-        auto geo = makePath(ui.factory(), curvePts(curveL_, 0), false);
-        if (geo) {
-            ui.rt()->DrawGeometry(geo.Get(), ui.brush(withAlpha(col::accent, 0.2f * curveAlpha)), 4.5f);
-            ui.rt()->DrawGeometry(geo.Get(), ui.brush(rgb(0xF2F5FA, curveAlpha)), 2.2f, ui.roundCap());
-        }
+    if (stereoDiffers_ && geoR_)
+        ui.rt()->DrawGeometry(geoR_.Get(), ui.brush(rgb(0xFFB547, 0.8f * curveAlpha)), 1.6f, ui.dashed());
+    if (geoL_) {
+        ui.rt()->DrawGeometry(geoL_.Get(), ui.brush(withAlpha(col::accent, 0.2f * curveAlpha)), 4.5f);
+        ui.rt()->DrawGeometry(geoL_.Get(), ui.brush(rgb(0xF2F5FA, curveAlpha)), 2.2f, ui.roundCap());
     }
 
     // ---- nodes + interaction
@@ -1384,7 +1419,7 @@ void App::drawSide(Ui& ui, Rect r)
                     Font::Small);
         }
     }
-    const double boost = eqdsp::maxBoostDb(s_, 2, sampleRate());
+    const double boost = cachedMaxBoost();
     const bool clipRisk = boost + s_.preampDb > 0.05;
     if (ui.button(makeId("autogain"), Rect{r.x + 10, slider.b() + 6, r.w - 20, 26}, L"Auto",
                   clipRisk ? Btn::Primary : Btn::Normal))

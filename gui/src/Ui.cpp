@@ -222,6 +222,12 @@ void Ui::endFrame()
     in.chars.clear();
     in.keyEnter = in.keyEsc = in.keyBack = in.keyDelete = in.keyTab = false;
     in.keyUndo = in.keyRedo = in.keyB = false;
+
+    // Drop text layouts not used for ~2 s (values that changed, closed popups).
+    if (++frameNo_ % 64 == 0 || layouts_.size() > 4000) {
+        for (auto it = layouts_.begin(); it != layouts_.end();)
+            it = (frameNo_ - it->second.lastUsed > 48) ? layouts_.erase(it) : std::next(it);
+    }
 }
 
 // ------------------------------------------------------------------ drawing
@@ -264,24 +270,49 @@ void Ui::circleStroke(float cx, float cy, float radius, D2D1_COLOR_F c, float wi
     rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), brush(c), width);
 }
 
+IDWriteTextLayout* Ui::layout(const std::wstring& s, Font f, float w, float h, Align a)
+{
+    // Key: box size to 1/8 DIP, font, alignment, then the text itself.
+    std::wstring key;
+    key.reserve(s.size() + 24);
+    key += std::to_wstring(static_cast<long>(w * 8)) + L'x' + std::to_wstring(static_cast<long>(h * 8));
+    key += static_cast<wchar_t>(L'a' + static_cast<int>(f));
+    key += static_cast<wchar_t>(L'0' + static_cast<int>(a));
+    key += L'|';
+    key += s;
+    auto it = layouts_.find(key);
+    if (it != layouts_.end()) {
+        it->second.lastUsed = frameNo_;
+        return it->second.layout.Get();
+    }
+    ComPtr<IDWriteTextLayout> lay;
+    if (FAILED(dw_->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), format(f), std::max(w, 0.0f),
+                                     std::max(h, 0.0f), &lay)))
+        return nullptr;
+    lay->SetTextAlignment(a == Align::Left     ? DWRITE_TEXT_ALIGNMENT_LEADING
+                          : a == Align::Center ? DWRITE_TEXT_ALIGNMENT_CENTER
+                                               : DWRITE_TEXT_ALIGNMENT_TRAILING);
+    CachedLayout& entry = layouts_[key];
+    entry.layout = lay;
+    entry.lastUsed = frameNo_;
+    return lay.Get();
+}
+
 void Ui::text(const std::wstring& s, Rect r, D2D1_COLOR_F c, Font f, Align a)
 {
     if (s.empty() || r.w <= 0 || skipText)
         return;
-    IDWriteTextFormat* fmt = format(f);
-    fmt->SetTextAlignment(a == Align::Left     ? DWRITE_TEXT_ALIGNMENT_LEADING
-                          : a == Align::Center ? DWRITE_TEXT_ALIGNMENT_CENTER
-                                               : DWRITE_TEXT_ALIGNMENT_TRAILING);
-    rt_->DrawText(s.c_str(), static_cast<UINT32>(s.size()), fmt, r.d2d(), brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (IDWriteTextLayout* lay = layout(s, f, r.w, r.h, a))
+        rt_->DrawTextLayout(D2D1::Point2F(r.x, r.y), lay, brush(c), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
 float Ui::textWidth(const std::wstring& s, Font f)
 {
-    ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(dw_->CreateTextLayout(s.c_str(), static_cast<UINT32>(s.size()), format(f), 4000.0f, 100.0f, &layout)))
+    IDWriteTextLayout* lay = layout(s, f, 4000.0f, 100.0f, Align::Left);
+    if (!lay)
         return 0;
     DWRITE_TEXT_METRICS m{};
-    layout->GetMetrics(&m);
+    lay->GetMetrics(&m);
     return m.widthIncludingTrailingWhitespace;
 }
 

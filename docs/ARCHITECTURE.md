@@ -113,14 +113,27 @@ the first ~40 s.
   - 8192-point FFT with a Hann window, at most 35 transforms per second;
   - smoothing in the power domain;
   - +3 dB/octave display tilt around 1 kHz.
-- **Rendering backend:** Direct3D 11 device → DXGI **flip-model** swap chain
-  (`FLIP_DISCARD`, 2 buffers) → Direct2D 1.1 device context drawing into the
-  back buffer, presented with vsync. If no GPU is available it falls back to
-  WARP (software rendering).
-  - On the dev machine most of the GPU cost was per presented frame, and the
-    content added comparatively little.
-  - The older `ID2D1HwndRenderTarget` (blt model) copied the whole window
-    every frame and used roughly 2.5× the GPU.
+- **Rendering backends:**
+  - **Default:** `ID2D1HwndRenderTarget`, the Direct2D window target.
+  - **Opt-in "low-GPU" renderer** (`renderer=flip` in `config.ini`, or the
+    gear menu; `WEQ_RENDERER=flip|legacy` overrides it): Direct3D 11 device
+    → DXGI flip-model swap chain (`FLIP_DISCARD`, 2 buffers) → Direct2D 1.1
+    device context. It falls back to WARP when there's no GPU, and recovers
+    from device loss. The compositor uses its back buffer directly, so it
+    needs well under half the GPU per frame.
+  - **Why it's opt-in:** a DPC_WATCHDOG_VIOLATION bugcheck happened while it
+    was being stress-tested (rapid cover/minimize cycles). The kernel dump
+    was unreadable (`CORRUPT_MODULELIST`). The same machine's graphics stack
+    had been abnormally slow before the crash, which a clean reboot fixed, so
+    the renderer may be unrelated. It stays opt-in until that's known.
+- **CPU per frame:**
+  - text layouts (`IDWriteTextLayout`) are cached by string, font, box and
+    alignment, and evicted after about 48 unused frames;
+  - EQ curve path geometries are cached until the settings or graph geometry
+    change;
+  - the max-boost scan behind the Auto button is cached per settings.
+
+  That's about 3.6× less CPU per frame than building everything every frame.
 - **Frame rate:**
   - **60 fps** while you interact;
   - **24 fps** for the analyzer while audio plays (12 fps when the window
@@ -133,11 +146,30 @@ the first ~40 s.
   the display off (`GUID_CONSOLE_DISPLAY_STATE`).
   - Coverage is checked every 0.25 s by subtracting the frame bounds of the
     visible, opaque top-level windows above it in z-order from the client
-    rectangle. Layered and click-through windows never count as covering.
+    rectangle.
+  - **See-through windows don't count as covering:** click-through windows,
+    and layered windows with per-pixel alpha, a colour key or constant alpha
+    below 255.
+  - **Chromium/Electron windows do count:** they're layered with constant
+    alpha 255, so they're opaque.
   - Routing keeps being ticked 4 times a second.
 - **`--bench out.txt [frames]`:** renders a test window with demo audio. It
-  reports the CPU per frame with vsync off, and this process's GPU 3D-engine
-  utilisation (PDH counter) at fixed frame rates with vsync on.
+  reports the CPU per frame with vsync off (plus settings-change and
+  curve-rebuild counts), and this process's GPU 3D-engine utilisation (PDH
+  counter) at the app's real frame rates with vsync on.
+- **Diagnostics:** the registered window message `WindowsEQ.Diagnostics`
+  answers `wParam 0` with the number of frames drawn so far. `wParam 1`
+  returns flags: 1 = audio active, 2 = routing running, 4 = seen,
+  8 = foreground.
+- **Resource evaluation:** `tools/eval-resources.ps1` uses that message and the
+  GPU counters to check five window states against targets: visible, covered
+  by a normal window, covered by an opaque layered window, covered by a
+  semi-transparent window, and minimized.
+  - Its cover windows run in a separate process (`tools/cover-window.ps1`)
+    with a live message loop. A window that stops responding gets replaced by
+    a see-through "ghost", which would make the test wrong.
+  - `tools/zorder-check.ps1` lists what's above Windows EQ and whether it
+    counts as covering.
 - **Settings:** stored in `%APPDATA%\WindowsEQ` (override with `WEQ_DATA_DIR`).
   - `eq.txt` holds the live EQ, in Equalizer APO format. It's saved 0.4 s
     after a change and reloaded if another program edits it.

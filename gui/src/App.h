@@ -36,6 +36,9 @@ public:
     std::wstring trayTip() const;
     unsigned stateKey() const; // changes whenever the tray icon/tip should update
     bool audioStopsOnQuit() const { return defaultIsCable_; }
+    // Diagnostics: is audio reaching the analyzer, is routing running?
+    bool audioActive() const { return analyzer_.hasSignal() || meterDb_[0] > -90 || meterDb_[1] > -90; }
+    bool routingRunning() const { return routerStarted_ && const_cast<weq::Router&>(router_).stats().running.load(); }
     // Shows the tray/settings menu at a screen point and handles what it
     // can; returns kMenuOpen / kMenuQuit for the host, else 0.
     static constexpr int kMenuOpen = 1, kMenuQuit = 2;
@@ -43,6 +46,8 @@ public:
     static constexpr float kMinLayoutW = 640.0f, kMinLayoutH = 420.0f;
     // Posted to the main window: quit, asking first if audio would stop.
     static constexpr UINT kMsgQuitAsk = WM_APP + 22;
+    // Posted to the main window: the renderer setting changed.
+    static constexpr UINT kMsgRendererChanged = WM_APP + 23;
     int showMenu(POINT screenPt, bool fromTray);
 
     // ---- benchmarks / previews
@@ -52,6 +57,8 @@ public:
     void setAnalyzerMode(int mode) { analyzerMode_ = mode; }
     // Benchmark: skip drawing sections (bit 0 graph, 1 side, 2 bands, 3 bars).
     void setBenchSkip(unsigned mask) { benchSkip_ = mask; }
+    unsigned long long settingsChanges() const { return settingsChanges_; }
+    unsigned long long curveRebuilds() const { return curveRebuilds_; }
 
 private:
     enum class Deferred { None, Import, Export, DeletePreset, ConfirmOverwrite, OpenSoundSettings, SettingsMenu };
@@ -97,6 +104,7 @@ private:
     // demo signal (benchmarks, previews)
     bool demoSignal_ = false;
     unsigned benchSkip_ = 0;
+    unsigned long long settingsChanges_ = 0, curveRebuilds_ = 0;
     eqdsp::Equalizer demoEq_;
     bool demoEqReady_ = false;
     uint32_t demoRng_ = 12345;
@@ -147,6 +155,9 @@ private:
     int analyzerMode_ = 0; // 0 pre+post, 1 post, 2 off
     int rangeSel_ = 1;     // index into kRanges
     double rangeDb() const;
+    double cachedMaxBoost();
+    eqdsp::EqSettings boostKey_{};
+    double boostFs_ = 0, boostDb_ = 0;
     Analyzer analyzer_;
     std::vector<float> analysisBuf_;
 
@@ -162,6 +173,16 @@ private:
     std::vector<float> curveL_, curveR_;
     std::vector<std::vector<float>> bandCurves_;
     bool stereoDiffers_ = false;
+    // Cached curve paths, rebuilt when the curves above or the graph's
+    // geometry change (fills are built lazily for the selected band).
+    struct CurveGeo {
+        ComPtr<ID2D1PathGeometry> line, fill;
+    };
+    std::vector<CurveGeo> bandGeo_;
+    ComPtr<ID2D1PathGeometry> geoL_, geoR_;
+    bool geoValid_ = false;
+    float geoY_ = -1, geoH_ = -1;
+    double geoRange_ = 0;
 
     // meters
     float meterDb_[2] = {-120, -120}, holdDb_[2] = {-120, -120};

@@ -46,6 +46,11 @@ struct Host {
     ComPtr<ID2D1DeviceContext> dc;
     ComPtr<IDXGISwapChain1> swap;
     ComPtr<ID2D1Bitmap1> target;
+    // Default renderer: the proven Direct2D window target. The flip-model
+    // renderer above (less GPU) is opt-in while a system crash seen during
+    // its testing is unexplained (config "renderer=flip").
+    bool useFlip = false;
+    ComPtr<ID2D1HwndRenderTarget> hwndRt;
     Ui ui;
     App app;
     float dpi = 96;
@@ -55,6 +60,11 @@ struct Host {
     bool showPerf = false;    // F12: frame timing overlay
     double perfFrameMs = 0, perfDrawMs = 0, perfFps = 0;
     double perfLastFrameMs = 0, perfLastDrawMs = 0;
+    // Diagnostics query (registered message "WindowsEQ.Diagnostics"):
+    // wParam 0 -> frames drawn so far; 1 -> flags (1 audio active,
+    // 2 routing running, 4 window counts as seen).
+    UINT msgDiagnostics = 0;
+    LONG_PTR framesDrawn = 0;
 
     // tray
     NOTIFYICONDATAW nid{};
@@ -82,9 +92,29 @@ bool isCloaked(HWND w)
     return SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked;
 }
 
+// Can this window be seen through? Click-through windows: yes. Layered
+// windows: only if they use per-pixel alpha (UpdateLayeredWindow) or a
+// colour key or constant alpha below 255. Chromium/Electron apps (browsers,
+// the Claude app, VS Code...) are layered but fully opaque, and must count.
+bool seeThrough(HWND w)
+{
+    const LONG ex = GetWindowLongW(w, GWL_EXSTYLE);
+    if (ex & WS_EX_TRANSPARENT)
+        return true;
+    if (!(ex & WS_EX_LAYERED))
+        return false;
+    COLORREF key = 0;
+    BYTE alpha = 0;
+    DWORD flags = 0;
+    if (!GetLayeredWindowAttributes(w, &key, &alpha, &flags))
+        return true; // per-pixel alpha
+    if (flags & LWA_COLORKEY)
+        return true;
+    return (flags & LWA_ALPHA) && alpha < 255;
+}
+
 // True when the client area is completely hidden behind other opaque
-// top-level windows (or off every screen). Layered / click-through windows
-// may be see-through, so they never count as covering.
+// top-level windows (or off every screen).
 bool coveredByOtherWindows(HWND self)
 {
     RECT rc;
@@ -101,7 +131,7 @@ bool coveredByOtherWindows(HWND self)
     for (HWND w = GetWindow(self, GW_HWNDPREV); w && kind != NULLREGION; w = GetWindow(w, GW_HWNDPREV)) {
         if (!IsWindowVisible(w) || IsIconic(w) || isCloaked(w))
             continue;
-        if (GetWindowLongW(w, GWL_EXSTYLE) & (WS_EX_LAYERED | WS_EX_TRANSPARENT))
+        if (seeThrough(w))
             continue;
         RECT r;
         if (FAILED(DwmGetWindowAttribute(w, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(r))) && !GetWindowRect(w, &r))
@@ -321,10 +351,46 @@ void trayBalloon(const wchar_t* title, const wchar_t* text)
 
 // ------------------------------------------------------------------ rendering
 
-// Rendering goes through Direct3D 11 + a DXGI flip-model swap chain + a
-// Direct2D 1.1 device context. Compared with ID2D1HwndRenderTarget (blt model)
-// the compositor uses our back buffer directly, without a full-window copy
-// per frame, which cut GPU use by more than half in measurements.
+// Two renderers:
+//  - default: ID2D1HwndRenderTarget, the proven Direct2D window target;
+//  - opt-in "low-GPU" (config renderer=flip): Direct3D 11 + DXGI flip-model
+//    swap chain + Direct2D 1.1 device context. The compositor uses its back
+//    buffer directly, without a full-window copy per frame (less than half
+//    the GPU in measurements). A system crash (DPC watchdog, inconclusive
+//    dump) happened while it was being stress-tested, so it isn't the
+//    default until that's understood.
+
+// config.ini "renderer=flip" opts in; WEQ_RENDERER=flip|legacy overrides (benchmarks).
+bool flipRendererConfigured()
+{
+    wchar_t env[16];
+    if (GetEnvironmentVariableW(L"WEQ_RENDERER", env, 16) > 0)
+        return _wcsicmp(env, L"flip") == 0;
+    return configGet(L"renderer", L"legacy") == L"flip";
+}
+
+ID2D1RenderTarget* activeTarget()
+{
+    return g.useFlip ? static_cast<ID2D1RenderTarget*>(g.dc.Get()) : static_cast<ID2D1RenderTarget*>(g.hwndRt.Get());
+}
+
+void createLegacyTarget()
+{
+    if (g.hwndRt)
+        return;
+    RECT rc;
+    GetClientRect(g.hwnd, &rc);
+    const D2D1_SIZE_U size = D2D1::SizeU(std::max<LONG>(1, rc.right - rc.left), std::max<LONG>(1, rc.bottom - rc.top));
+    if (SUCCEEDED(g.d2d->CreateHwndRenderTarget(
+            D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), g.dpi, g.dpi),
+            D2D1::HwndRenderTargetProperties(g.hwnd, size,
+                                             g.presentImmediately ? D2D1_PRESENT_OPTIONS_IMMEDIATELY
+                                                                  : D2D1_PRESENT_OPTIONS_NONE),
+            &g.hwndRt))) {
+        g.hwndRt->SetDpi(g.dpi, g.dpi);
+        g.ui.setTarget(g.hwndRt.Get());
+    }
+}
 
 // Wraps the swap chain's current back buffer as the device context's target.
 bool bindBackBuffer()
@@ -342,7 +408,7 @@ bool bindBackBuffer()
     return true;
 }
 
-void createTarget()
+void createFlipTarget()
 {
     if (g.dc)
         return;
@@ -396,11 +462,20 @@ void createTarget()
     g.ui.setTarget(g.dc.Get());
 }
 
-// Drops the device context (and with `everything`, the swap chain and the
+void createTarget()
+{
+    if (g.useFlip)
+        createFlipTarget();
+    else
+        createLegacyTarget();
+}
+
+// Drops the render target (and with `everything`, the swap chain and the
 // GPU device too); the next frame recreates what is missing.
 void discardTarget(bool everything = false)
 {
     g.ui.releaseTarget();
+    g.hwndRt.Reset();
     if (g.dc)
         g.dc->SetTarget(nullptr);
     g.target.Reset();
@@ -414,6 +489,12 @@ void discardTarget(bool everything = false)
 
 void resizeTarget()
 {
+    if (g.hwndRt) {
+        RECT rc;
+        GetClientRect(g.hwnd, &rc);
+        g.hwndRt->Resize(D2D1::SizeU(static_cast<UINT32>(rc.right - rc.left), static_cast<UINT32>(rc.bottom - rc.top)));
+        return;
+    }
     if (!g.swap)
         return;
     RECT rc;
@@ -435,7 +516,8 @@ void resizeTarget()
 void render()
 {
     createTarget();
-    if (!g.dc)
+    ID2D1RenderTarget* rt = activeTarget();
+    if (!rt)
         return;
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
@@ -447,9 +529,9 @@ void render()
     g.ui.in.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     g.ui.in.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
-    const D2D1_SIZE_F size = g.dc->GetSize();
-    g.dc->BeginDraw();
-    g.dc->SetTransform(D2D1::Matrix3x2F::Identity());
+    const D2D1_SIZE_F size = rt->GetSize();
+    rt->BeginDraw();
+    rt->SetTransform(D2D1::Matrix3x2F::Identity());
     g.ui.beginFrame(size.width, size.height, dt);
     bool frameFailed = false;
     if (g.appReady) {
@@ -474,8 +556,10 @@ void render()
     g.ui.endFrame();
     LARGE_INTEGER mid;
     QueryPerformanceCounter(&mid);
-    HRESULT hr = g.dc->EndDraw();
-    if (SUCCEEDED(hr)) {
+    HRESULT hr = rt->EndDraw();
+    if (SUCCEEDED(hr))
+        ++g.framesDrawn;
+    if (SUCCEEDED(hr) && g.useFlip) { // the window target presents in EndDraw
         // Vsync (interval 1) normally; benchmarks present immediately.
         const HRESULT pr = g.swap->Present(g.presentImmediately ? 0 : 1, 0);
         if (pr == DXGI_ERROR_DEVICE_REMOVED || pr == DXGI_ERROR_DEVICE_RESET)
@@ -598,6 +682,20 @@ void quitApp(bool ask)
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     Input& in = g.ui.in;
+    if (msg == g.msgDiagnostics && g.msgDiagnostics) {
+        if (wp == 0)
+            return g.framesDrawn;
+        LRESULT flags = 0;
+        if (g.appReady && g.app.audioActive())
+            flags |= 1;
+        if (g.appReady && g.app.routingRunning())
+            flags |= 2;
+        if (!g.hiddenMode)
+            flags |= 4;
+        if (GetForegroundWindow() == hwnd)
+            flags |= 8;
+        return flags;
+    }
     if (msg == g.taskbarCreated && g.taskbarCreated) { // Explorer restarted
         g.trayAdded = false;
         trayAdd();
@@ -795,6 +893,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case App::kMsgQuitAsk:
         quitApp(true);
         return 0;
+    case App::kMsgRendererChanged:
+        discardTarget(true);
+        g.useFlip = flipRendererConfigured();
+        g.lastFrame.QuadPart = 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
 
     case WM_CLOSE:
         if (configGet(L"closeToTray", L"1") != L"0" && g.trayAdded)
@@ -929,6 +1033,7 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
     struct Result {
         const wchar_t* name;
         double fps, frameMs, endDrawMs, cpuPct;
+        unsigned long long settingsChanges, curveRebuilds;
     };
     std::vector<Result> results;
     auto runCase = [&](const wchar_t* name, int analyzerMode, bool skipText, unsigned skipMask = 0) {
@@ -944,6 +1049,7 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
         LARGE_INTEGER t0, t1;
         QueryPerformanceCounter(&t0);
         double sumFrame = 0, sumEnd = 0;
+        const auto changes0 = g.app.settingsChanges(), rebuilds0 = g.app.curveRebuilds();
         for (int i = 0; i < frames; ++i) {
             pump();
             render();
@@ -955,11 +1061,16 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
         auto ft = [](FILETIME f) { return (static_cast<ULONGLONG>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
         const double wall = static_cast<double>(t1.QuadPart - t0.QuadPart) / g.qpf.QuadPart;
         const double cpu = (ft(k1) - ft(k0) + ft(u1) - ft(u0)) * 1e-7;
-        results.push_back({name, frames / wall, sumFrame / frames, sumEnd / frames, cpu / wall * 100.0});
+        results.push_back({name, frames / wall, sumFrame / frames, sumEnd / frames, cpu / wall * 100.0,
+                           g.app.settingsChanges() - changes0, g.app.curveRebuilds() - rebuilds0});
     };
     runCase(L"full UI, analyzer before+after", 0, false);
     runCase(L"analyzer off", 2, false);
     runCase(L"background only", 2, true, 15);
+    runCase(L"graph only (analyzer off)", 2, false, 14);
+    runCase(L"side column only", 2, false, 13);
+    runCase(L"band panel only", 2, false, 11);
+    runCase(L"top/tool/status bars only", 2, false, 7);
 
     // Paced runs (vsync on, like the real app), measuring this process's
     // GPU 3D-engine utilisation with Windows' own performance counter.
@@ -1018,21 +1129,25 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
         const double cpu = (ft(k1) - ft(k0) + ft(u1) - ft(u0)) * 1e-7;
         paced.push_back({name, n / wall, gpu, cpu / wall * 100.0});
     };
-    pacedCase(L"30 fps, full UI + analyzer", 30, 0, 0);
-    pacedCase(L"15 fps, full UI + analyzer", 15, 0, 0);
-    pacedCase(L"30 fps, analyzer off", 30, 2, 0);
-    pacedCase(L"30 fps, graph only", 30, 0, 14);
-    pacedCase(L"30 fps, background only", 30, 2, 15);
-    pacedCase(L"4 fps, full UI (idle rate)", 4, 0, 0);
+    // The app's real rates: analyzer 24 fps (active window) / 12 fps (inactive),
+    // meters only 15 fps, idle 2 fps.
+    pacedCase(L"24 fps, analyzer (active window)", 24, 0, 0);
+    pacedCase(L"12 fps, analyzer (inactive window)", 12, 0, 0);
+    pacedCase(L"15 fps, analyzer off (meters)", 15, 2, 0);
+    pacedCase(L"2 fps, idle", 2, 0, 0);
+    pacedCase(L"24 fps, background only", 24, 2, 15);
     if (query)
         PdhCloseQuery(query);
 
     FILE* f = nullptr;
     if (_wfopen_s(&f, outPath.c_str(), L"w") == 0 && f) {
-        fwprintf(f, L"Windows EQ benchmark, %.0f DPI\n\nUnpaced (vsync off), %d frames per case:\n", g.dpi, frames);
-        fwprintf(f, L"%-34s %8s %10s %10s %8s\n", L"case", L"fps", L"frame ms", L"EndDraw", L"CPU %");
+        fwprintf(f, L"Windows EQ benchmark, %.0f DPI, renderer: %s\n\nUnpaced (vsync off), %d frames per case:\n",
+                 g.dpi, g.useFlip ? L"flip model (low-GPU)" : L"window target (default)", frames);
+        fwprintf(f, L"%-34s %8s %10s %10s %8s %9s %9s\n", L"case", L"fps", L"frame ms", L"EndDraw", L"CPU %",
+                 L"changes", L"rebuilds");
         for (const Result& r : results)
-            fwprintf(f, L"%-34s %8.0f %10.2f %10.2f %8.1f\n", r.name, r.fps, r.frameMs, r.endDrawMs, r.cpuPct);
+            fwprintf(f, L"%-34s %8.0f %10.2f %10.2f %8.1f %9llu %9llu\n", r.name, r.fps, r.frameMs, r.endDrawMs,
+                     r.cpuPct, r.settingsChanges, r.curveRebuilds);
         fwprintf(f, L"\nPaced (vsync on), 5 s per case:\n%-34s %8s %8s %8s\n", L"case", L"fps", L"GPU %", L"CPU %");
         for (const Paced& p : paced)
             fwprintf(f, L"%-34s %8.1f %8.2f %8.2f\n", p.name, p.fps, p.gpuPct, p.cpuPct);
@@ -1149,6 +1264,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         const float my = argc >= 8 ? static_cast<float>(_wtof(argv[7])) : -1.0f;
         return renderToPng(argv[2], w, h, secs, mx, my, !hasArg(argc, argv, L"--demo"));
     }
+    g.useFlip = flipRendererConfigured();
     if (argc >= 3 && _wcsicmp(argv[1], L"--bench") == 0) {
         if (!initGraphics())
             return 2;
@@ -1217,6 +1333,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         return 1;
     g.dpi = static_cast<float>(GetDpiForWindow(g.hwnd));
     g.taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+    g.msgDiagnostics = RegisterWindowMessageW(L"WindowsEQ.Diagnostics");
     WTSRegisterSessionNotification(g.hwnd, NOTIFY_FOR_THIS_SESSION);
     g.displayNotify = RegisterPowerSettingNotification(g.hwnd, &kDisplayStateGuid, DEVICE_NOTIFY_WINDOW_HANDLE);
 

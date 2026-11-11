@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace gui {
@@ -147,6 +148,15 @@ public:
 
 private:
     IDWriteTextFormat* format(Font f) { return fmt_[static_cast<int>(f)].Get(); }
+    // Text layouts are expensive to build (shaping), so they're cached by
+    // string, font, box size and alignment, and dropped after ~2 s unused.
+    IDWriteTextLayout* layout(const std::wstring& s, Font f, float w, float h, Align a);
+    struct CachedLayout {
+        ComPtr<IDWriteTextLayout> layout;
+        uint64_t lastUsed = 0;
+    };
+    std::unordered_map<std::wstring, CachedLayout> layouts_;
+    uint64_t frameNo_ = 0;
     void drawPopup();
     void editKeys(std::wstring& buf, bool& commit, bool& cancel);
 
