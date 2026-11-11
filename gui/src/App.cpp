@@ -707,6 +707,10 @@ void App::frame(Ui& ui, double dt)
 
     const float W = ui.width(), H = ui.height();
     ui.fill(Rect{0, 0, W, H}, col::bg);
+    // A minimized window can still get a paint with a 0x0 client area; below
+    // the minimum size the layout would go negative, so draw nothing.
+    if (W < kMinLayoutW || H < kMinLayoutH)
+        return;
 
     const float pad = 16;
     const Rect top{0, 0, W, 64};
@@ -977,6 +981,13 @@ void App::drawBanner(Ui& ui, Rect r)
 
 void App::updateCurves(Rect g)
 {
+    if (!(g.w >= 2.0f)) { // also catches NaN
+        curveL_.assign(2, 0.0f);
+        curveR_.assign(2, 0.0f);
+        bandCurves_.assign(s_.numBands, std::vector<float>(2, 0.0f));
+        curveW_ = -1;
+        return;
+    }
     const double fs = sampleRate();
     if (curveX_ == g.x && curveW_ == g.w && curveFs_ == fs && sameSettings(curveKey_, s_))
         return;

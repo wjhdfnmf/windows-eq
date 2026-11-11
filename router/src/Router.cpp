@@ -230,8 +230,19 @@ bool Router::start(const RouterConfig& config, std::wstring& error)
 
     trace_.clear();
     trace_.reserve(4000);
-    capThread_ = std::thread(&Router::captureThread, this);
-    renThread_ = std::thread(&Router::renderThread, this);
+    // An exception escaping a thread would terminate the process; turn it
+    // into an ordinary routing failure (the host restarts routing).
+    auto guardedThread = [this](void (Router::*body)(), const wchar_t* name) {
+        return std::thread([this, body, name] {
+            try {
+                (this->*body)();
+            } catch (...) {
+                fail(std::wstring(name) + L" thread: internal error", E_UNEXPECTED);
+            }
+        });
+    };
+    capThread_ = guardedThread(&Router::captureThread, L"capture");
+    renThread_ = guardedThread(&Router::renderThread, L"output");
     return true;
 }
 

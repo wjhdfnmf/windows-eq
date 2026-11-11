@@ -38,6 +38,8 @@ public:
     // Shows the tray/settings menu at a screen point and handles what it
     // can; returns kMenuOpen / kMenuQuit for the host, else 0.
     static constexpr int kMenuOpen = 1, kMenuQuit = 2;
+    // Smallest client area (DIPs) the layout supports; smaller frames draw nothing.
+    static constexpr float kMinLayoutW = 640.0f, kMinLayoutH = 420.0f;
     // Posted to the main window: quit, asking first if audio would stop.
     static constexpr UINT kMsgQuitAsk = WM_APP + 22;
     int showMenu(POINT screenPt, bool fromTray);

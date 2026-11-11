@@ -7,9 +7,14 @@ add_executable(WindowsEQ WIN32
     src/Analyzer.cpp
     src/Storage.cpp
     src/Presets.cpp
+    src/CrashHandler.cpp
     res/WindowsEQ.rc
     res/WindowsEQ.manifest
 )
 target_include_directories(WindowsEQ PRIVATE ${CMAKE_SOURCE_DIR}/common/include)
 target_link_libraries(WindowsEQ PRIVATE weqrouter weqinstall d2d1 dwrite dwmapi comdlg32 comctl32 shell32 shlwapi
-    windowscodecs)
+    windowscodecs dbghelp)
+# Ship a symbol file next to the exe (not in the installer) so crash dumps
+# from release builds can be read. /OPT:REF,ICF keep the code identical to a
+# build without symbols.
+target_link_options(WindowsEQ PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)

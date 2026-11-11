@@ -2,7 +2,7 @@
 // resource. No administrator rights needed.
 //
 //   WindowsEQ-Setup.exe                    interactive
-//   WindowsEQ-Setup.exe --silent [--no-autostart]
+//   WindowsEQ-Setup.exe --silent [--autostart | --no-autostart]   (updates keep the current choice)
 //   WindowsEQ-Setup.exe --extract-only DIR   (testing: just write the payload)
 
 #include "AudioDevices.h"
@@ -189,8 +189,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         SHCreateDirectoryExW(nullptr, argv[2], nullptr);
         rc = extractPayload(std::wstring(argv[2]) + L"\\" + inst::kAppExe, size, error) ? 0 : 2;
     } else if (hasArg(argc, argv, L"--silent")) {
+        // Explicit flag wins; otherwise an update keeps the current choice and
+        // a fresh install turns sign-in launch on.
+        const bool autostart = hasArg(argc, argv, L"--autostart")      ? true
+                               : hasArg(argc, argv, L"--no-autostart") ? false
+                               : inst::isInstalled()                   ? inst::autostartEnabled()
+                                                                       : true;
         std::wstring error;
-        rc = install(!hasArg(argc, argv, L"--no-autostart"), error) ? 0 : 2;
+        rc = install(autostart, error) ? 0 : 2;
     } else {
         rc = interactive();
     }

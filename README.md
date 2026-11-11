@@ -107,6 +107,23 @@ Your settings live in `%APPDATA%\WindowsEQ`:
   and HDMI output. The routing adapts to each device's timing, but please
   report problems; the status bar's Latency / Drift / Dropouts numbers help.
 
+## Troubleshooting
+
+- **No sound:**
+  - Windows EQ must be running while Windows plays to CABLE Input.
+  - Check that the status bar says **Running**, and that the **OUTPUT** box
+    shows your real device.
+- **The EQ has no effect:** if the yellow banner says Windows isn't playing
+  to CABLE Input, click **Open Sound settings** and choose CABLE Input.
+- **Crackles or dropouts:** the status bar's **Dropouts** counter shows
+  whether audio is being interrupted. The buffer grows by itself after a
+  dropout.
+- **The app closed unexpectedly:** it writes a report to
+  `%APPDATA%\WindowsEQ\crashes\` (`crash.log` plus a `.dmp` file).
+  Non-fatal errors go to `%APPDATA%\WindowsEQ\error.log`. Please attach both
+  to a bug report. Each release includes `WindowsEQ.pdb` for reading the
+  dumps.
+
 ## Uninstall
 
 Use **Settings → Apps → Windows EQ → Uninstall**, or the gear menu in the

@@ -2,6 +2,7 @@
 // tray icon, and the command-line modes (--tray, --uninstall, ...).
 
 #include "App.h"
+#include "CrashHandler.h"
 #include "Storage.h"
 #include "Ui.h"
 
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -285,8 +287,19 @@ void render()
     g.rt->BeginDraw();
     g.rt->SetTransform(D2D1::Matrix3x2F::Identity());
     g.ui.beginFrame(size.width, size.height, dt);
-    if (g.appReady)
-        g.app.frame(g.ui, dt);
+    bool frameFailed = false;
+    if (g.appReady) {
+        // Never let a UI bug take audio routing down with it: log and carry on.
+        try {
+            g.app.frame(g.ui, dt);
+        } catch (const std::exception& e) {
+            logError(L"frame", e.what());
+            frameFailed = true;
+        } catch (...) {
+            logError(L"frame", "unknown exception");
+            frameFailed = true;
+        }
+    }
     if (g.showPerf) {
         wchar_t b[128];
         swprintf(b, 128, L"%.0f fps   frame %.2f ms   draw %.2f ms", g.perfFps, g.perfFrameMs, g.perfDrawMs);
@@ -305,10 +318,24 @@ void render()
     g.perfFrameMs += (frameMs - g.perfFrameMs) * 0.1;
     g.perfDrawMs += (drawMs - g.perfDrawMs) * 0.1;
     g.perfFps += (1.0 / dt - g.perfFps) * 0.1;
-    if (hr == D2DERR_RECREATE_TARGET)
+    // A frame that threw may have left clips pushed: start from a fresh target.
+    if (hr == D2DERR_RECREATE_TARGET || frameFailed || FAILED(hr))
         discardTarget();
     SetCursor(LoadCursorW(nullptr, g.ui.cursor()));
     trayUpdate(false);
+}
+
+// Runs fn, logging (instead of crashing on) any C++ exception.
+template <class Fn>
+void guarded(const wchar_t* where, Fn&& fn)
+{
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        logError(where, e.what());
+    } catch (...) {
+        logError(where, "unknown exception");
+    }
 }
 
 // ------------------------------------------------------------------ window state
@@ -406,9 +433,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
         EndPaint(hwnd, &ps);
-        render();
+        // Minimized windows have a 0x0 client area: nothing to draw.
+        if (!IsIconic(hwnd))
+            render();
         if (g.appReady)
-            g.app.runDeferred();
+            guarded(L"deferred", [] { g.app.runDeferred(); });
         return 0;
     }
     case WM_ERASEBKGND:
@@ -423,7 +452,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                   : 0.25;
             g.lastTick = now;
             if (g.appReady) {
-                g.app.tick(std::clamp(dt, 0.0, 1.0), false);
+                guarded(L"tick", [dt] { g.app.tick(std::clamp(dt, 0.0, 1.0), false); });
                 trayUpdate(false);
             }
             if (IsIconic(hwnd) && !g.hiddenMode)
@@ -564,7 +593,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!g.appReady)
                 break;
             const POINT pt{GET_X_LPARAM(wp), GET_Y_LPARAM(wp)};
-            const int r = g.app.showMenu(pt, true);
+            int r = 0;
+            guarded(L"tray menu", [&] { r = g.app.showMenu(pt, true); });
             if (r == App::kMenuOpen)
                 showMainWindow();
             else if (r == App::kMenuQuit)
@@ -767,6 +797,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         return renderToPng(argv[2], w, h, secs, mx, my, !hasArg(argc, argv, L"--demo"));
     }
     const bool startInTray = hasArg(argc, argv, L"--tray");
+    installCrashHandler();
+
+    // Diagnostics self-test: an exception escaping a window procedure, the
+    // same path as a real UI crash. Expect crash.log + a .dmp in crashes\.
+    if (hasArg(argc, argv, L"--crash-test")) {
+        WNDCLASSW tc{};
+        tc.lpfnWndProc = [](HWND h, UINT m, WPARAM w, LPARAM l) -> LRESULT {
+            if (m == WM_APP)
+                throw std::runtime_error("crash test (--crash-test)");
+            return DefWindowProcW(h, m, w, l);
+        };
+        tc.hInstance = inst;
+        tc.lpszClassName = L"WindowsEQ.CrashTest";
+        RegisterClassW(&tc);
+        HWND t = CreateWindowW(tc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
+        PostMessageW(t, WM_APP, 0, 0);
+        MSG m;
+        while (GetMessageW(&m, nullptr, 0, 0) > 0)
+            DispatchMessageW(&m);
+        return 0;
+    }
 
     // One instance: show the existing one (unless this is a silent sign-in start).
     if (HWND existing = FindWindowW(inst::kMainWindowClass, nullptr)) {

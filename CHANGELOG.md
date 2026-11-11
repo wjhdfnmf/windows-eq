@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.1 (2026-11-10)
+
+### Fixed
+
+- **Crash on minimize:** the app could close without warning when its window
+  was minimized. A repaint with a zero-size window made the graph layout
+  negative, and the resulting error was never caught. The app now skips
+  drawing at that size, and the graph code is safe at any window size.
+- **Silent updates kept your sign-in choice:** `WindowsEQ-Setup.exe --silent`
+  no longer turns **Start with Windows** back on when updating.
+
+### Added
+
+- **Resilience:**
+  - An unexpected error while drawing is logged to
+    `%APPDATA%\WindowsEQ\error.log` and the app keeps running.
+  - An unexpected error in the audio threads restarts audio routing instead
+    of ending the app.
+- **Crash reports:** if the app does crash, it writes
+  `%APPDATA%\WindowsEQ\crashes\crash.log` and a small minidump.
+  - Each release now includes `WindowsEQ.pdb`, the symbol file needed to read
+    those dumps.
+  - `WindowsEQ.exe --crash-test` checks that crash reporting works.
+
 ## 1.0.0 (2026-11-10)
 
 This is the first release.

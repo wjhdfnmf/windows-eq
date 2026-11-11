@@ -128,7 +128,23 @@ the first ~40 s.
   - `--uninstall [--quiet]`;
   - `--render-png out.png [w h secs mx my] [--demo]`: render the UI off-screen
     (`--demo` opens no audio devices);
-  - `--write-icon file.ico`.
+  - `--write-icon file.ico`;
+  - `--crash-test`: throw from a window procedure to check crash reporting.
+- **Error handling:**
+  - **UI errors:** exceptions in drawing, background ticks, menus and dialogs
+    are caught at the message-handler boundary. They're logged to
+    `error.log`, and the render target is recreated.
+  - **Why the boundary matters:** an exception escaping a window procedure
+    makes Windows end the process. That's how 1.0.0 crashed: `updateCurves`
+    sized a vector from a negative graph width while the window was
+    minimized.
+  - **Audio-thread errors:** exceptions in the audio threads become an
+    ordinary routing failure, and the app restarts routing after 2 s.
+  - **Fatal errors:** an unhandled-exception filter and a `std::terminate`
+    handler write `crashes\crash.log` (including the C++ exception message)
+    and a minidump, then chain to Windows Error Reporting. Release builds
+    produce `WindowsEQ.pdb` (`/Zi`, `/DEBUG /OPT:REF /OPT:ICF`) for reading
+    the dumps.
 
 ## Installer (`installer/`, `install/`)
 
@@ -140,8 +156,10 @@ the first ~40 s.
   and embeds it as `RCDATA`. Release builds also copy the installer to `dist/`.
 - **Updates:** the setup posts `WM_APP+20` to the running app to make it quit,
   waits for it to exit, replaces the exe atomically, and starts it again.
-- **Command line:** `--silent [--no-autostart]` installs without a dialog;
-  `--extract-only DIR` just writes the payload (for testing).
+- **Command line:**
+  - `--silent [--autostart | --no-autostart]` installs without a dialog. An
+    update keeps the current sign-in choice unless a flag is given.
+  - `--extract-only DIR` just writes the payload (for testing).
 
 ## Experimental: system-effect APO (`apo/`, `setup/`)
 
