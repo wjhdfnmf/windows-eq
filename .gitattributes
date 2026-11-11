@@ -1,0 +1,4 @@
+# Store text with LF in the repository; Windows checkouts get CRLF.
+* text=auto
+*.ico binary
+*.png binary

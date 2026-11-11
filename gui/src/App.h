@@ -1,0 +1,149 @@
+#pragma once
+
+#include "Analyzer.h"
+#include "Ui.h"
+
+#include "AudioDevices.h"
+#include "Router.h"
+#include "eqdsp/Types.h"
+
+#include <string>
+#include <vector>
+
+namespace gui {
+
+class App {
+public:
+    bool init(HWND hwnd);
+    void shutdown();
+    // One UI frame: logic, layout and drawing (inside BeginDraw/EndDraw).
+    void frame(Ui& ui, double dtSec);
+    // Modal work (dialogs, message boxes) requested during frame(); runs
+    // after EndDraw so a nested paint cannot re-enter the frame.
+    void runDeferred();
+    // How often to redraw when the user isn't interacting: fast enough for
+    // the analyzer while audio plays, slow when idle.
+    double idleFrameInterval() const;
+    // Routing, autosave and file watching; called by frame(), and on a timer
+    // while the window is hidden in the tray (visible = false skips the FFT).
+    void tick(double dtSec, bool visible);
+
+    // ---- for the tray icon and menus
+    bool bypassed() const { return bypass_; }
+    void setBypassed(bool b);
+    std::wstring trayTip() const;
+    unsigned stateKey() const; // changes whenever the tray icon/tip should update
+    bool audioStopsOnQuit() const { return defaultIsCable_; }
+    // Shows the tray/settings menu at a screen point and handles what it
+    // can; returns kMenuOpen / kMenuQuit for the host, else 0.
+    static constexpr int kMenuOpen = 1, kMenuQuit = 2;
+    // Posted to the main window: quit, asking first if audio would stop.
+    static constexpr UINT kMsgQuitAsk = WM_APP + 22;
+    int showMenu(POINT screenPt, bool fromTray);
+
+private:
+    enum class Deferred { None, Import, Export, DeletePreset, ConfirmOverwrite, OpenSoundSettings, SettingsMenu };
+    POINT settingsMenuPt_{};
+
+    // ---- routing
+    void refreshDevices(bool force);
+    void startRouter();
+    void stopRouter();
+    void pollRouter(double dt);
+    void pollAnalysis(double dt, bool visible);
+    double sampleRate() const;
+
+    // ---- EQ model
+    void publish();
+    void onSettingsChanged();
+    void undo();
+    void redo();
+    void saveCurrentNow();
+    void pollExternalEdits(double dt);
+    void addBand(eqdsp::FilterType type, double f, double g, double q);
+    void deleteBand(int index);
+
+    // ---- presets
+    void rebuildPresetList();
+    void applyPreset(int comboIndex);
+    void saveUserPreset(const std::wstring& name);
+    void syncPresetSelection();
+
+    // ---- drawing
+    void drawTopBar(Ui& ui, Rect r);
+    void drawToolbar(Ui& ui, Rect r);
+    void drawBanner(Ui& ui, Rect r);
+    void drawGraph(Ui& ui, Rect r);
+    void drawSide(Ui& ui, Rect r);
+    void drawBandPanel(Ui& ui, Rect r);
+    void drawStatusBar(Ui& ui, Rect r);
+    std::wstring bannerText() const;
+    void updateCurves(Rect g);
+
+    HWND hwnd_ = nullptr;
+
+    // routing
+    weq::Router router_;
+    bool routerStarted_ = false;
+    double retryIn_ = 0;
+    std::wstring routerError_;
+    std::vector<weq::AudioDevice> outputs_, inputs_;
+    std::vector<std::wstring> outputNames_, inputNames_;
+    std::wstring outputId_, inputId_;
+    int outputSel_ = -1, inputSel_ = -1;
+    std::wstring defaultOutputName_;
+    bool defaultIsCable_ = true, cableInstalled_ = true;
+    double devicePollIn_ = 0;
+
+    // EQ model
+    eqdsp::EqSettings s_{};
+    bool bypass_ = false;
+    bool limiter_ = true;
+    int sel_ = -1;
+    eqdsp::EqSettings frameStart_{}, gestureBase_{};
+    bool gesture_ = false;
+    double lastLooseChange_ = -10;
+    std::vector<eqdsp::EqSettings> undo_, redo_;
+    double saveIn_ = -1;
+    unsigned long long ownStamp_ = 0;
+    double externalPollIn_ = 0;
+
+    // presets
+    std::vector<std::wstring> userPresets_;
+    std::vector<std::wstring> presetItems_;
+    int presetSel_ = -1;
+    std::wstring presetName_ = L"Flat";
+    bool modified_ = false;
+    bool saveAsOpen_ = false;
+    std::wstring saveAsName_;
+    std::wstring pendingName_;
+    Deferred deferred_ = Deferred::None;
+    bool inDeferred_ = false;
+
+    // view
+    int analyzerMode_ = 0; // 0 pre+post, 1 post, 2 off
+    int rangeSel_ = 1;     // index into kRanges
+    double rangeDb() const;
+    Analyzer analyzer_;
+    std::vector<float> analysisBuf_;
+
+    // graph interaction
+    int dragNode_ = -1;
+    float dragX_ = 0, dragY_ = 0;
+    double dragF_ = 0, dragG_ = 0;
+
+    // curve cache (dB per sample column)
+    eqdsp::EqSettings curveKey_{};
+    double curveFs_ = 0;
+    float curveX_ = -1, curveW_ = -1;
+    std::vector<float> curveL_, curveR_;
+    std::vector<std::vector<float>> bandCurves_;
+    bool stereoDiffers_ = false;
+
+    // meters
+    float meterDb_[2] = {-120, -120}, holdDb_[2] = {-120, -120};
+    double holdAge_[2] = {0, 0};
+    double limitFlash_ = 0;
+};
+
+} // namespace gui

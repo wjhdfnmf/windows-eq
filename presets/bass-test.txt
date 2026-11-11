@@ -1,0 +1,13 @@
+# Windows EQ preset - Equalizer APO / AutoEQ "ParametricEQ.txt" format.
+# Save this file and the change is applied immediately (smoothly, no clicks).
+#
+# Examples:
+#   Preamp: -6 dB
+#   Filter 1: ON LSC Fc 105 Hz Gain 5.5 dB Q 0.71
+#   Filter 2: ON PK Fc 3000 Hz Gain -2.5 dB Q 1.41
+#   Channel: L          (following filters only on the left channel)
+
+# TEST: strong bass boost so the EQ is easy to hear. To turn it off, set
+# Filter 1 to OFF (or delete it) and Preamp back to 0 dB, then save.
+Preamp: -9 dB
+Filter 1: ON LSC Fc 120 Hz Gain 9 dB Q 0.71
