@@ -11,7 +11,7 @@
 
 using namespace eqdsp;
 
-static void run(double fs, int channels, int bands, bool ramping)
+static void run(double fs, int channels, int bands, bool ramping, int dynamicBands = 0)
 {
     EqSettings s;
     s.numBands = static_cast<uint32_t>(bands);
@@ -20,6 +20,13 @@ static void run(double fs, int channels, int bands, bool ramping)
         s.bands[i].frequencyHz = 30.0 * std::pow(600.0, i / std::max(1.0, bands - 1.0));
         s.bands[i].gainDb = (i % 2 ? 3.0 : -3.0);
         s.bands[i].q = 1.4;
+        if (i < dynamicBands) {
+            // Threshold low enough that the noise keeps them working.
+            s.bands[i].dynamic = 1;
+            s.bands[i].thresholdDb = -40.0;
+            s.bands[i].ratio = 3.0;
+            s.bands[i].rangeDb = -6.0;
+        }
     }
 
     Equalizer eq;
@@ -48,8 +55,11 @@ static void run(double fs, int channels, int bands, bool ramping)
     const auto t1 = std::chrono::steady_clock::now();
 
     const double elapsed = std::chrono::duration<double>(t1 - t0).count();
-    std::printf("%6.0f Hz  %d ch  %2d bands  %-8s  %7.3f%% of one core  (%.0fx realtime, %.1f ns/frame)\n",
-                fs, channels, bands, ramping ? "dragging" : "steady",
+    char what[32];
+    std::snprintf(what, sizeof what, "%s%s", ramping ? "dragging" : "steady",
+                  dynamicBands ? (dynamicBands == bands ? ", all dyn" : ", some dyn") : "");
+    std::printf("%6.0f Hz  %d ch  %2d bands  %-18s  %7.3f%% of one core  (%.0fx realtime, %.1f ns/frame)\n",
+                fs, channels, bands, what,
                 100.0 * elapsed / seconds, seconds / elapsed,
                 1e9 * elapsed / (seconds * fs));
 }
@@ -63,5 +73,8 @@ int main()
     run(48000, 8, 10, false);
     run(96000, 2, 10, false);
     run(192000, 2, 32, false);
+    run(48000, 2, 10, false, 2);
+    run(48000, 2, 10, false, 10);
+    run(48000, 2, 32, false, 32);
     return 0;
 }

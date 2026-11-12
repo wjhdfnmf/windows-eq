@@ -29,7 +29,7 @@ double responseDb(const EqSettings& s, int channel, double freqHz, double sample
                   bool includePreamp = true);
 
 // Largest boost (dB, filters only, no preamp) over 10 Hz .. Nyquist across the
-// first numChannels channels.
+// first numChannels channels. Dynamic bands that can boost count at full boost.
 double maxBoostDb(const EqSettings& s, int numChannels, double sampleRate);
 
 // Preamp (<= 0 dB) that cancels the largest boost so the EQ cannot clip.

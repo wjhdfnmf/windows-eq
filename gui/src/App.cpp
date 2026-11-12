@@ -785,7 +785,7 @@ void App::frame(Ui& ui, double dt)
     const Rect top{0, 0, W, 64};
     const Rect status{0, H - 30, W, 30};
     const Rect tool{pad, top.b(), W - 2 * pad, 44};
-    const Rect band{pad, status.y - 128, W - 2 * pad, 120};
+    const Rect band{pad, status.y - 184, W - 2 * pad, 176};
     float mainY = tool.b() + 4;
     const std::wstring banner = bannerText();
     Rect bannerR{pad, mainY, W - 2 * pad, 0};
@@ -1061,6 +1061,7 @@ void App::updateCurves(Rect g)
         curveL_.assign(2, 0.0f);
         curveR_.assign(2, 0.0f);
         bandCurves_.assign(s_.numBands, std::vector<float>(2, 0.0f));
+        rangeCurves_.assign(s_.numBands, {});
         curveW_ = -1;
         return;
     }
@@ -1103,6 +1104,21 @@ void App::updateCurves(Rect g)
         }
         curveL_[i] = static_cast<float>(l);
         curveR_[i] = static_cast<float>(rr);
+    }
+    // Dynamic bands: their curve at full dynamic range (gain + range), for the
+    // shaded "where it can move" area.
+    rangeCurves_.assign(s_.numBands, {});
+    for (uint32_t b = 0; b < s_.numBands; ++b) {
+        if (!eqdsp::isDynamic(s_.bands[b]))
+            continue;
+        Band full = s_.bands[b];
+        full.gainDb += full.rangeDb;
+        const eqdsp::BiquadCoeffs c = eqdsp::designBiquad(full, fs);
+        rangeCurves_[b].resize(n);
+        for (int i = 0; i < n; ++i) {
+            const double f = kFMin * std::exp(ratio * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
+            rangeCurves_[b][i] = static_cast<float>(eqdsp::biquadMagnitudeDb(c, f, fs));
+        }
     }
 }
 
@@ -1157,7 +1173,7 @@ void App::drawGraph(Ui& ui, Rect g)
     }
 
     // ---- spectrum analyzer
-    if (analyzerMode_ != 2 && routerStarted_) {
+    if (analyzerMode_ != 2 && (routerStarted_ || demoSignal_)) {
         auto spectrumPts = [&](const std::vector<float>& spec, bool closed) {
             std::vector<D2D1_POINT_2F> pts;
             const float stepX = 3.0f;
@@ -1227,8 +1243,16 @@ void App::drawGraph(Ui& ui, Rect g)
         geoH_ = g.h;
         geoRange_ = range;
         bandGeo_.assign(bandCurves_.size(), CurveGeo{});
-        for (size_t b = 0; b < bandCurves_.size(); ++b)
-            bandGeo_[b].line = makePath(ui.factory(), curvePts(bandCurves_[b]), false);
+        for (size_t b = 0; b < bandCurves_.size(); ++b) {
+            auto pts = curvePts(bandCurves_[b]);
+            bandGeo_[b].line = makePath(ui.factory(), pts, false);
+            if (b < rangeCurves_.size() && !rangeCurves_[b].empty()) {
+                // Area the dynamics can move the band through.
+                auto edge = curvePts(rangeCurves_[b]);
+                pts.insert(pts.end(), edge.rbegin(), edge.rend());
+                bandGeo_[b].range = makePath(ui.factory(), pts, true);
+            }
+        }
         geoL_ = makePath(ui.factory(), curvePts(curveL_), false);
         geoR_ = stereoDiffers_ ? makePath(ui.factory(), curvePts(curveR_), false) : nullptr;
     }
@@ -1237,6 +1261,8 @@ void App::drawGraph(Ui& ui, Rect g)
         if (!s_.bands[b].enabled && !selected)
             continue;
         const D2D1_COLOR_F c = bandColor(static_cast<int>(b));
+        if (bandGeo_[b].range && s_.bands[b].enabled)
+            ui.rt()->FillGeometry(bandGeo_[b].range.Get(), ui.brush(withAlpha(c, selected ? 0.22f : 0.12f)));
         if (selected) {
             if (!bandGeo_[b].fill) {
                 auto area = curvePts(bandCurves_[b]);
@@ -1257,6 +1283,33 @@ void App::drawGraph(Ui& ui, Rect g)
     if (geoL_) {
         ui.rt()->DrawGeometry(geoL_.Get(), ui.brush(withAlpha(col::accent, 0.2f * curveAlpha)), 4.5f);
         ui.rt()->DrawGeometry(geoL_.Get(), ui.brush(rgb(0xF2F5FA, curveAlpha)), 2.2f, ui.roundCap());
+    }
+
+    // Live response: while dynamic bands are moving, draw the EQ as it is
+    // right now (static curve plus each dynamic band's current change).
+    if (!bypass_ && n > 1) {
+        std::vector<std::pair<int, double>> moving;
+        for (uint32_t b = 0; b < s_.numBands; ++b) {
+            const double live = liveDynGain(static_cast<int>(b));
+            if (std::fabs(live) > 0.05 && (s_.bands[b].channelMask & 1u))
+                moving.push_back({static_cast<int>(b), live});
+        }
+        if (!moving.empty()) {
+            const double fs = sampleRate();
+            const double lr = std::log(kFMax / kFMin);
+            std::vector<float> live = curveL_;
+            for (const auto& [b, change] : moving) {
+                Band now = s_.bands[b];
+                now.gainDb += change;
+                const eqdsp::BiquadCoeffs c = eqdsp::designBiquad(now, fs);
+                for (int i = 0; i < n; ++i) {
+                    const double f = kFMin * std::exp(lr * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
+                    live[i] += static_cast<float>(eqdsp::biquadMagnitudeDb(c, f, fs)) - bandCurves_[b][i];
+                }
+            }
+            if (auto geo = makePath(ui.factory(), curvePts(live), false))
+                ui.rt()->DrawGeometry(geo.Get(), ui.brush(withAlpha(col::accentHi, 0.95f)), 1.8f, ui.roundCap());
+        }
     }
 
     // ---- nodes + interaction
@@ -1350,6 +1403,20 @@ void App::drawGraph(Ui& ui, Rect g)
         const float rad = selected || hot ? 9.5f : 8.0f;
         if (selected)
             ui.circle(p.x, p.y, rad + 5, withAlpha(c, 0.18f));
+        if (eqdsp::isDynamic(band) && !bypass_) {
+            // Dynamic band: an outer ring, and a live marker showing where the
+            // dynamics have the band right now.
+            ui.circleStroke(p.x, p.y, rad + 3.5f, withAlpha(c, 0.75f), 1.3f);
+            const double live = liveDynGain(b);
+            if (std::fabs(live) > 0.05) {
+                const double perNode = band.type == FilterType::Peaking ? 1.0 : 0.5;
+                const double nodeDb = (band.type == FilterType::Peaking ? band.gainDb : band.gainDb * 0.5);
+                const float ly = std::clamp(yOf(nodeDb + live * perNode), g.y + 6, g.b() - 6);
+                ui.line(p.x, p.y, p.x, ly, withAlpha(c, 0.9f), 2.0f);
+                ui.circle(p.x, ly, 4.0f, c);
+                ui.circleStroke(p.x, ly, 4.0f, col::text, 1.0f);
+            }
+        }
         if (band.enabled) {
             ui.circle(p.x, p.y, rad, c);
             ui.text(std::to_wstring(b + 1), Rect{p.x - 10, p.y - 9, 20, 18}, rgb(0x0B1420), Font::Node, Align::Center);
@@ -1369,6 +1436,8 @@ void App::drawGraph(Ui& ui, Rect g)
         if (hasGain(b.type))
             tip += L"   " + formatNumber(b.gainDb, NumKind::Db);
         tip += L"   Q " + formatNumber(b.q, NumKind::Q);
+        if (eqdsp::isDynamic(b))
+            tip += L"   ·  dynamic, now " + formatNumber(liveDynGain(hoverNode), NumKind::Db);
         if (!b.enabled)
             tip += L"   (off)";
         ui.tooltip(tip);
@@ -1516,6 +1585,8 @@ void App::drawBandPanel(Ui& ui, Rect r)
             ui.circle(chip.x + 11, chip.cy(), 4, c);
         else
             ui.circleStroke(chip.x + 11, chip.cy(), 3.5f, c, 1.2f);
+        if (eqdsp::isDynamic(s_.bands[b]))
+            ui.circleStroke(chip.x + 11, chip.cy(), 6.5f, withAlpha(c, 0.8f), 1.1f); // dynamic band
         ui.text(std::to_wstring(b + 1), Rect{chip.x + 16, chip.y, chip.w - 18, ch}, on ? col::text : col::textFaint,
                 Font::Bold, Align::Center);
         if (hover)
@@ -1602,11 +1673,119 @@ void App::drawBandPanel(Ui& ui, Rect r)
         b.channelMask = cs == 0 ? eqdsp::kAllChannels : cs == 1 ? 1u : 2u;
     ex += 142;
 
+    // Row 3: dynamics.
+    drawDynamicsRow(ui, r, b, r.y + 114, r.y + 130, fh);
+
     const Rect delR{r.r() - 16 - 104, fy, 104, fh};
     if (delR.x > ex) {
         if (ui.button(makeId("delband"), delR, L"Remove", Btn::Danger, true, L""))
             deleteBand(sel_);
     }
+}
+
+void App::drawDynamicsRow(Ui& ui, Rect r, Band& b, float ly, float fy, float fh)
+{
+    float ex = r.x + 16;
+    ui.line(r.x + 12, ly - 8, r.r() - 12, ly - 8, rgb(0x232833));
+    if (!eqdsp::supportsDynamics(b.type)) {
+        ui.text(L"DYNAMIC", Rect{ex, ly, 80, 14}, col::textFaint, Font::Caps);
+        ui.text(L"Dynamic EQ works on peak and shelf bands.", Rect{ex, fy, r.w - 32, fh}, col::textFaint, Font::Body);
+        return;
+    }
+    bool dyn = b.dynamic != 0;
+    ui.text(L"DYNAMIC", Rect{ex, ly, 80, 14}, dyn ? col::accentHi : col::textFaint, Font::Caps);
+    if (ui.toggleSwitch(makeId("dynon"), Rect{ex, fy, 40, fh}, dyn, L""))
+        b.dynamic = dyn ? 1u : 0u;
+    if (ui.over(Rect{ex, fy, 40, fh}))
+        ui.tooltip(L"Dynamic: this band's gain moves with the music's level in its range");
+    ex += 88;
+    if (!dyn) {
+        ui.text(L"Make this band react to the music — e.g. cut harsh highs only when they get loud, or lift the "
+                L"bass only when it's quiet.",
+                Rect{ex, fy, r.r() - 16 - ex, fh}, col::textDim, Font::Body);
+        return;
+    }
+
+    auto caption = [&](const wchar_t* t, float w) { ui.text(t, Rect{ex, ly, w, 14}, col::textFaint, Font::Caps); };
+    auto tip = [&](float w, const wchar_t* t) {
+        if (ui.over(Rect{ex, fy, w, fh}))
+            ui.tooltip(t);
+    };
+
+    caption(L"MODE", 130);
+    static const std::vector<std::wstring> modes = {L"Above threshold", L"Below threshold"};
+    int mode = b.dynMode == eqdsp::DynMode::Below ? 1 : 0;
+    if (ui.combo(makeId("dynmode"), Rect{ex, fy, 150, fh}, modes, mode))
+        b.dynMode = mode == 1 ? eqdsp::DynMode::Below : eqdsp::DynMode::Above;
+    tip(150, L"Above: act when this band gets loud (tame, de-ess). Below: act when it's quiet (lift).");
+    ex += 162;
+
+    caption(L"THRESHOLD", 112);
+    NumberSpec tspec{NumKind::Db, -80.0, 0.0, false, 0.25, 1.0};
+    double thr = b.thresholdDb;
+    if (ui.numberField(makeId("dynthr"), Rect{ex, fy, 112, fh}, thr, tspec))
+        b.thresholdDb = std::round(thr * 10.0) / 10.0;
+    tip(112, L"Level (dBFS) in this band's range where the dynamics start");
+    ex += 124;
+
+    caption(L"RATIO", 96);
+    NumberSpec rspec{NumKind::Ratio, 1.0, 20.0, true, 1.0 / 60.0, 1.0 / 6.0};
+    double ratio = b.ratio;
+    if (ui.numberField(makeId("dynratio"), Rect{ex, fy, 96, fh}, ratio, rspec))
+        b.ratio = std::round(ratio * 10.0) / 10.0;
+    tip(96, L"How strongly the gain follows the level past the threshold");
+    ex += 108;
+
+    caption(L"RANGE", 112);
+    NumberSpec gspec{NumKind::Db, -24.0, 24.0, false, 0.1, 0.5};
+    double range = b.rangeDb;
+    if (ui.numberField(makeId("dynrange"), Rect{ex, fy, 112, fh}, range, gspec))
+        b.rangeDb = std::round(range * 10.0) / 10.0;
+    tip(112, L"The most the dynamics can move the gain: negative cuts, positive boosts");
+    ex += 124;
+
+    caption(L"ATTACK", 100);
+    NumberSpec aspec{NumKind::Ms, 0.1, 500.0, true, 1.0 / 30.0, 1.0 / 6.0};
+    double att = b.attackMs;
+    if (ui.numberField(makeId("dynatt"), Rect{ex, fy, 100, fh}, att, aspec))
+        b.attackMs = att < 10 ? std::round(att * 10.0) / 10.0 : std::round(att);
+    tip(100, L"How fast it reacts");
+    ex += 112;
+
+    caption(L"RELEASE", 100);
+    NumberSpec relspec{NumKind::Ms, 5.0, 3000.0, true, 1.0 / 30.0, 1.0 / 6.0};
+    double rel = b.releaseMs;
+    if (ui.numberField(makeId("dynrel"), Rect{ex, fy, 100, fh}, rel, relspec))
+        b.releaseMs = std::round(rel);
+    tip(100, L"How fast it recovers");
+    ex += 112;
+
+    // Live meter: how far the dynamics have moved the gain right now.
+    const int bandIndex = static_cast<int>(&b - s_.bands);
+    const double now = liveDynGain(bandIndex);
+    const float mw = std::max(0.0f, r.r() - 16 - ex);
+    if (mw > 60) {
+        ui.text(L"NOW", Rect{ex, ly, mw, 14}, col::textFaint, Font::Caps);
+        const Rect bar{ex, fy + 6, mw - 70, fh - 12};
+        ui.fill(bar, col::field, 4);
+        const double span = std::max(1.0, std::fabs(b.rangeDb));
+        const float frac = static_cast<float>(std::clamp(std::fabs(now) / span, 0.0, 1.0));
+        if (frac > 0.002f) {
+            const D2D1_COLOR_F c = now < 0 ? col::warn : col::good;
+            ui.fill(Rect{bar.x, bar.y, bar.w * frac, bar.h}, c, 4);
+        }
+        ui.text(formatNumber(now, NumKind::Db), Rect{bar.r() + 6, fy, 64, fh}, std::fabs(now) > 0.05 ? col::text : col::textFaint,
+                Font::Body);
+    }
+}
+
+double App::liveDynGain(int band)
+{
+    if (band < 0 || band >= eqdsp::kMaxBands || !eqdsp::isDynamic(s_.bands[band]) || bypass_)
+        return 0.0;
+    if (demoSignal_)
+        return demoEq_.dynamicGainDb(band);
+    return router_.stats().dynGainDb[band].load(std::memory_order_relaxed);
 }
 
 // ================================================================== status bar

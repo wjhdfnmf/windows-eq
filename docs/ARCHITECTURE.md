@@ -46,6 +46,33 @@ Windows EQ captures that audio, equalizes it and plays it on the real device.
   0 dB bands are skipped.
 - **Safety limiter:** optional, zero latency (instant attack, 50 ms release),
   acting only above the ceiling.
+- **Dynamic bands** (`Band::dynamic`; peaks and shelves):
+  - **Sidechain:** the band's level is measured on the EQ *input* through a
+    band-pass at the band (peaks, Q clamped to 0.5–10) or a low/high-pass at
+    the corner (shelves).
+  - **Envelope:** a Hilbert transformer (two 4-stage all-pass chains, about
+    90° apart) gives the analytic-signal envelope I² + Q². For a steady tone
+    that equals A², with essentially no ripple.
+    - It's smoothed over about 2 periods of the band frequency (2–20 ms).
+    - Channels are linked: the loudest channel decides.
+    - The level is sine-referenced dBFS.
+  - **Gain computer:** excess over (*Above*) or under (*Below*) the threshold,
+    with a 6 dB soft knee, × (1 − 1/ratio). It's limited to |range| and given
+    the sign of the range.
+  - **Ballistics:** attack and release are one-pole smoothing of the gain
+    change.
+  - **Update rate:** every 32 frames the band's biquad is redesigned for
+    `gain + change` (if it moved more than 0.005 dB), and the coefficients
+    ramp linearly over the 32 samples.
+  - **Measured:** exact gain changes (ratio and knee to 0.01 dB), attack and
+    release time constants as specified, distortion −142 dB on steady tones,
+    and bit-exact output while idle. About 0.07% of one core per dynamic band
+    (stereo, 48 kHz).
+  - **Preset files:** stored as `# WindowsEQ Dynamic N: Mode Above Threshold
+    -30 dB Ratio 2 Range -6 dB Attack 5 ms Release 120 ms` after Filter N, a
+    comment to Equalizer APO.
+  - **Live state:** the router publishes each band's live gain change in
+    `RouterStats::dynGainDb` for the UI.
 - **Robustness:** denormal flushing (FTZ/DAZ), NaN/Inf recovery, and parameter
   clamping. There is no allocation or locking in `setSettings()` /
   `process()`.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "eqdsp/BiquadDesign.h"
 #include "eqdsp/Types.h"
 
 #include <vector>
@@ -13,6 +14,11 @@ namespace eqdsp {
 // - SSE2: channels are processed in pairs (one __m128d lane each).
 // - Parameter changes ramp the coefficients per sample (no clicks/zipper).
 // - Bands at 0 dB are skipped, and a fully flat EQ is a bit-exact passthrough.
+// - Dynamic bands (Band::dynamic): the band's level, measured on the input
+//   through a band-pass / low-pass / high-pass at the band, moves its gain
+//   between gainDb and gainDb + rangeDb (threshold, ratio, 6 dB soft knee,
+//   attack/release). Channels are linked (max level). Updated every
+//   kDynBlock frames with per-sample coefficient interpolation.
 // - Zero latency.
 //
 // Threading: prepare() allocates and must not be called on the audio thread.
@@ -49,11 +55,48 @@ public:
     // Deepest limiter gain reduction (dB, <= 0) since the last call.
     double takeLimiterReductionDb();
 
+    // Current gain change of a dynamic band (dB; 0 when idle or not dynamic).
+    double dynamicGainDb(int band) const;
+
     struct Stage; // defined in Equalizer.cpp
 
+    // Dynamics are evaluated every kDynBlock frames; filter coefficients are
+    // interpolated per sample in between.
+    static constexpr int kDynBlock = 32;
+
 private:
+    // Per-band dynamics state.
+    struct Dyn {
+        bool active = false;
+        double scB0 = 1, scB1 = 0, scB2 = 0, scA1 = 0, scA2 = 0; // sidechain filter
+        double power = 0;     // smoothed sidechain power (linear)
+        double powerCoef = 0; // RMS smoothing per kDynBlock
+        double attCoef = 0, relCoef = 0;
+        double change = 0;    // current gain change (dB)
+        double applied = 0;   // change the stage coefficients were last built for
+    };
+
     void applyTargets(bool immediate);
     void processBlock(const float* in, float* out, int frames);
+    void configureDynamics();
+    void runSidechains(const float* in, int frames);
+
+    static constexpr int kMaxSub = 256 / kDynBlock; // sub-blocks per internal block
+
+    // Sidechain state of one channel of one dynamic band: the band filter,
+    // then a Hilbert pair (two 4-stage all-pass chains ~90 degrees apart)
+    // whose combined magnitude is a ripple-free envelope for steady tones.
+    struct ScChannel {
+        double z1 = 0, z2 = 0;
+        double ap[2][4][4] = {}; // [path][stage]{x1, x2, y1, y2}
+        double delay = 0;        // one-sample delay on path 0
+    };
+
+    Dyn dyn_[kMaxBands];
+    std::vector<ScChannel> scState_;         // [band][channel]
+    std::vector<BiquadCoeffs> dynCoefs_;     // [band][sub-block] coefficients to ramp to
+    std::vector<unsigned char> dynRetarget_; // [band][sub-block] 1 = ramp to dynCoefs_
+    bool anyDynamic_ = false;
 
     EqSettings settings_{};
     double sampleRate_ = 0.0;

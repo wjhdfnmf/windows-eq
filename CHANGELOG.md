@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.1.0 (2026-11-11)
+
+### Added
+
+- **Dynamic EQ:** any peak or shelf band can be made **dynamic**, so its gain
+  moves with the music's level in that band's range.
+  - **Mode:** *Above threshold* acts when the band gets loud (tame harshness,
+    de-ess). *Below threshold* acts when it's quiet (lift bass at low volume).
+  - **Threshold** (dBFS), **Ratio**, **Range** (the most the gain can move;
+    negative cuts, positive boosts), **Attack** and **Release**, with a 6 dB
+    soft knee.
+  - **On the graph:** a shaded area shows how far each dynamic band can move.
+    A live marker and a bright curve show what the EQ is doing right now. The
+    band editor has a live **NOW** meter.
+  - **New built-in presets:** *De-esser (dynamic)*, *Tame harshness
+    (dynamic)*, *Dynamic loudness*.
+  - **Preset files:** dynamic settings are saved as `# WindowsEQ Dynamic …`
+    comment lines, so the files still work in Equalizer APO and AutoEQ tools,
+    which ignore them.
+- **Auto preamp:** now accounts for dynamic bands that can boost.
+
+### Quality
+
+- **Level detection:** each dynamic band listens through a band-pass (peaks)
+  or a low/high-pass (shelves) at the band. A Hilbert-transform envelope
+  detector means the gain doesn't wobble with the waveform: distortion
+  measured at −142 dB on steady tones, where a plain RMS detector measured
+  −47 dB. Channels are linked, so the stereo image doesn't shift.
+- **Responsiveness:** filters update every 32 samples (0.7 ms) and are blended
+  per sample, so they can react fast enough to de-ess without clicks.
+- **Exact when idle:** a dynamic band that isn't triggered leaves the audio
+  bit-exact.
+- **CPU:** about 0.07% of one core per dynamic band (stereo, 48 kHz).
+
 ## 1.0.2 (2026-11-11)
 
 ### Fixed

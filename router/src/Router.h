@@ -34,6 +34,7 @@ struct RouterStats {
     std::atomic<double> targetMs{0}, fillMs{0}, ppm{0}, cpuPercent{0}, latencyMs{0};
     std::atomic<float> peak{0};               // max |sample| since last read (exchange to reset)
     std::atomic<float> peakCh[2]{};           // same, output channels 0 and 1 (for meters)
+    std::atomic<float> dynGainDb[eqdsp::kMaxBands]{}; // live gain change of each dynamic band
     std::atomic<double> limiterDb{0};
     std::atomic<unsigned long long> underruns{0}, overrunFrames{0}, discontinuities{0}, resyncs{0};
     std::atomic<unsigned long long> silenceTrimmedFrames{0}; // excess silence dropped (inaudible)

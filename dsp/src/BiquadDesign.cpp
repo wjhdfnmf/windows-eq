@@ -173,10 +173,15 @@ double responseDb(const EqSettings& s, int channel, double freqHz, double sample
     return db;
 }
 
-double maxBoostDb(const EqSettings& s, int numChannels, double sampleRate)
+double maxBoostDb(const EqSettings& settings, int numChannels, double sampleRate)
 {
-    if (s.bypass)
+    if (settings.bypass)
         return 0.0;
+    // Worst case: dynamic bands that can boost are at their full boost.
+    EqSettings s = settings;
+    for (uint32_t b = 0; b < s.numBands && b < static_cast<uint32_t>(kMaxBands); ++b)
+        if (isDynamic(s.bands[b]) && s.bands[b].rangeDb > 0)
+            s.bands[b].gainDb += s.bands[b].rangeDb;
 
     constexpr int kPoints = 2048;
     const double fLo = 10.0;

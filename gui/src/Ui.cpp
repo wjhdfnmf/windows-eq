@@ -38,6 +38,12 @@ std::wstring formatNumber(double v, NumKind kind)
     case NumKind::Q:
         swprintf(b, 64, L"%.2f", v);
         break;
+    case NumKind::Ms:
+        swprintf(b, 64, v < 10.0 ? L"%.1f ms" : L"%.0f ms", v);
+        break;
+    case NumKind::Ratio:
+        swprintf(b, 64, v < 10.0 ? L"%.1f : 1" : L"%.0f : 1", v);
+        break;
     default:
         swprintf(b, 64, L"%.2f", v);
         break;

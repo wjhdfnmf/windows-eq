@@ -95,6 +95,8 @@ private:
     void drawGraph(Ui& ui, Rect r);
     void drawSide(Ui& ui, Rect r);
     void drawBandPanel(Ui& ui, Rect r);
+    void drawDynamicsRow(Ui& ui, Rect r, eqdsp::Band& b, float captionY, float fieldY, float fieldH);
+    double liveDynGain(int band); // current gain change of a dynamic band (dB)
     void drawStatusBar(Ui& ui, Rect r);
     std::wstring bannerText() const;
     void updateCurves(Rect g);
@@ -172,11 +174,12 @@ private:
     float curveX_ = -1, curveW_ = -1;
     std::vector<float> curveL_, curveR_;
     std::vector<std::vector<float>> bandCurves_;
+    std::vector<std::vector<float>> rangeCurves_; // dynamic bands at gain + range (else empty)
     bool stereoDiffers_ = false;
     // Cached curve paths, rebuilt when the curves above or the graph's
     // geometry change (fills are built lazily for the selected band).
     struct CurveGeo {
-        ComPtr<ID2D1PathGeometry> line, fill;
+        ComPtr<ID2D1PathGeometry> line, fill, range; // range: dynamic area between static and full-range curve
     };
     std::vector<CurveGeo> bandGeo_;
     ComPtr<ID2D1PathGeometry> geoL_, geoR_;

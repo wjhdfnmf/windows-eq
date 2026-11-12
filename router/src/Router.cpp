@@ -579,6 +579,8 @@ void Router::renderThread()
         for (UINT32 f = 0; f < avail; ++f)
             tap[2 * f] = monoAt(&work[static_cast<size_t>(f) * capCh_]);
         eq.process(work.data(), work.data(), static_cast<int>(avail));
+        for (int b = 0; b < eqdsp::kMaxBands; ++b)
+            stats_.dynGainDb[b].store(static_cast<float>(eq.dynamicGainDb(b)), std::memory_order_relaxed);
         for (UINT32 f = 0; f < avail; ++f)
             tap[2 * f + 1] = monoAt(&work[static_cast<size_t>(f) * capCh_]);
         analysis_.write(tap.data(), avail); // drops what doesn't fit; never blocks

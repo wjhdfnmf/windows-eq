@@ -811,6 +811,211 @@ TEST(preset_round_trips)
     }
 }
 
+// ---------------------------------------------------------------- dynamic EQ
+
+namespace {
+
+Band dynBand(FilterType type, double f, double gain, double q, DynMode mode, double thr, double ratio, double range,
+             double attMs, double relMs)
+{
+    Band b = makeBand(type, f, gain, q);
+    b.dynamic = 1;
+    b.dynMode = mode;
+    b.thresholdDb = thr;
+    b.ratio = ratio;
+    b.rangeDb = range;
+    b.attackMs = attMs;
+    b.releaseMs = relMs;
+    return b;
+}
+
+// Output/input level (dB) of a steady sine through the EQ, measured over the
+// last 0.25 s of 1.5 s, plus the band's reported dynamic gain at the end.
+double dynSineGainDb(const EqSettings& s, double freq, double amp, double* reportedDb = nullptr)
+{
+    const double fs = 48000.0;
+    Equalizer eq;
+    eq.prepare(fs, 2);
+    eq.setSettings(s, true);
+    const int total = 72000, window = 12000;
+    std::vector<float> in = sine(freq, fs, total, 2, amp);
+    std::vector<float> out = in;
+    processChunked(eq, out, 2);
+    if (reportedDb)
+        *reportedDb = eq.dynamicGainDb(0);
+    return 20.0 * std::log10(rmsChannel(out, 2, 0, total - window, window) / rmsChannel(in, 2, 0, total - window, window));
+}
+
+} // namespace
+
+TEST(dynamic_cut_acts_only_when_loud)
+{
+    // A de-esser: 6 kHz peak at 0 dB that cuts up to 10 dB above -30 dBFS.
+    const EqSettings s = makeSettings({dynBand(FilterType::Peaking, 6000, 0, 2.0, DynMode::Above, -30, 100, -10, 1, 50)});
+    double reported = 0;
+    const double loud = dynSineGainDb(s, 6000, 0.5, &reported);   // -6 dBFS: 24 dB over
+    std::printf("    loud 6 kHz: %.2f dB (reported %.2f)\n", loud, reported);
+    CHECK_NEAR(loud, -10.0, 0.3);
+    CHECK_NEAR(reported, -10.0, 0.05);
+    const double quiet = dynSineGainDb(s, 6000, 0.003, &reported); // -50 dBFS: under
+    std::printf("    quiet 6 kHz: %.3f dB (reported %.3f)\n", quiet, reported);
+    CHECK_NEAR(quiet, 0.0, 0.02);
+    CHECK_NEAR(reported, 0.0, 0.01);
+    // Loud content far from the band doesn't trigger it.
+    const double bass = dynSineGainDb(s, 200, 0.5, &reported);
+    std::printf("    loud 200 Hz: %.3f dB (reported %.3f)\n", bass, reported);
+    CHECK_NEAR(reported, 0.0, 0.05);
+    CHECK_NEAR(bass, 0.0, 0.05);
+}
+
+TEST(dynamic_ratio_and_knee)
+{
+    // Ratio 2, range large: 20 dB over -> 10 dB of cut (outside the 6 dB knee).
+    const EqSettings s = makeSettings({dynBand(FilterType::Peaking, 1000, 0, 1.0, DynMode::Above, -40, 2, -24, 1, 50)});
+    double reported = 0;
+    dynSineGainDb(s, 1000, 0.1, &reported); // -20 dBFS
+    std::printf("    20 dB over at 2:1 -> %.2f dB\n", reported);
+    CHECK_NEAR(reported, -10.0, 0.3);
+    // Exactly at threshold: inside the knee, (3)^2 / 12 = 0.75 dB over -> 0.375 dB cut.
+    dynSineGainDb(s, 1000, 0.01, &reported); // -40 dBFS
+    std::printf("    at threshold -> %.3f dB\n", reported);
+    CHECK_NEAR(reported, -0.375, 0.1);
+}
+
+TEST(dynamic_boost_below_threshold)
+{
+    // "Loudness": low shelf lifts up to +6 dB while the bass is quiet.
+    const EqSettings s =
+        makeSettings({dynBand(FilterType::LowShelf, 150, 0, 0.71, DynMode::Below, -30, 100, 6, 10, 100)});
+    double reported = 0;
+    const double quiet = dynSineGainDb(s, 50, 0.003, &reported); // -50 dBFS
+    std::printf("    quiet 50 Hz: %.2f dB (reported %.2f)\n", quiet, reported);
+    CHECK_NEAR(reported, 6.0, 0.05);
+    CHECK(quiet > 5.0);
+    const double loud = dynSineGainDb(s, 50, 0.5, &reported);
+    std::printf("    loud 50 Hz: %.3f dB (reported %.3f)\n", loud, reported);
+    CHECK_NEAR(reported, 0.0, 0.05);
+    CHECK_NEAR(loud, 0.0, 0.1);
+}
+
+TEST(dynamic_attack_and_release_times)
+{
+    const double fs = 48000.0;
+    const EqSettings s = makeSettings({dynBand(FilterType::Peaking, 3000, 0, 1.0, DynMode::Above, -40, 100, -12, 10, 100)});
+    Equalizer eq;
+    eq.prepare(fs, 2);
+    eq.setSettings(s, true);
+    std::vector<float> buf(static_cast<size_t>(Equalizer::kDynBlock) * 2);
+    auto run = [&](double amp, double seconds, std::vector<double>& trace) {
+        const int blocks = static_cast<int>(seconds * fs / Equalizer::kDynBlock);
+        static long long n = 0;
+        for (int k = 0; k < blocks; ++k) {
+            for (int i = 0; i < Equalizer::kDynBlock; ++i, ++n) {
+                const float x = static_cast<float>(amp * std::sin(2.0 * kPi * 3000.0 * n / fs));
+                buf[2 * i] = buf[2 * i + 1] = x;
+            }
+            eq.process(buf.data(), buf.data(), Equalizer::kDynBlock);
+            trace.push_back(eq.dynamicGainDb(0));
+        }
+    };
+    std::vector<double> idle, attack, release;
+    run(0.0, 0.1, idle);
+    run(0.5, 0.2, attack);   // loud: target -12 dB
+    run(0.0, 1.0, release);  // silence again
+    auto at = [&](const std::vector<double>& v, double ms) {
+        return v[std::min(v.size() - 1, static_cast<size_t>(ms * 1e-3 * fs / Equalizer::kDynBlock))];
+    };
+    // One attack time constant: ~63% of the way (the 2 ms RMS detector adds a little lag).
+    std::printf("    attack: %.2f dB @10 ms, %.2f dB @50 ms; release: %.2f dB @100 ms, %.2f dB @500 ms\n",
+                at(attack, 10), at(attack, 50), at(release, 100), at(release, 500));
+    CHECK(idle.back() == 0.0);
+    CHECK(at(attack, 10) < -5.0 && at(attack, 10) > -9.5);
+    CHECK(at(attack, 50) < -11.5);
+    CHECK(at(release, 100) > -6.5 && at(release, 100) < -2.0);
+    CHECK(at(release, 500) > -0.2);
+}
+
+TEST(dynamic_idle_band_is_bit_exact)
+{
+    // A dynamic band at 0 dB that isn't triggered must not change the audio.
+    const EqSettings s = makeSettings({dynBand(FilterType::Peaking, 6000, 0, 2.0, DynMode::Above, -10, 4, -8, 1, 50)});
+    Equalizer eq;
+    eq.prepare(48000.0, 2);
+    eq.setSettings(s, true);
+    std::vector<float> in = noise(48000 * 2, 0.001);
+    std::vector<float> out = in;
+    processChunked(eq, out, 2);
+    CHECK(out == in);
+    CHECK(eq.dynamicGainDb(0) == 0.0);
+}
+
+TEST(dynamic_stays_stable_with_extreme_settings)
+{
+    const EqSettings s = makeSettings({dynBand(FilterType::HighShelf, 20000, 20, 4.0, DynMode::Above, -80, 100, -30, 0.1, 1),
+                                       dynBand(FilterType::Peaking, 30, 24, 10.0, DynMode::Below, 0, 1, 30, 0.1, 1)});
+    Equalizer eq;
+    eq.prepare(48000.0, 2);
+    eq.setSettings(s, true);
+    std::vector<float> a = noise(48000 * 2, 0.9, 7);
+    processChunked(eq, a, 2);
+    bool finite = true;
+    for (float x : a)
+        finite = finite && std::isfinite(x);
+    CHECK(finite);
+}
+
+TEST(dynamic_settings_round_trip_through_preset_text)
+{
+    EqSettings s = makeSettings({makeBand(FilterType::LowShelf, 100, 2, 0.7),
+                                 dynBand(FilterType::Peaking, 6500, -1.5, 3.0, DynMode::Above, -35, 4, -8, 1.5, 60),
+                                 dynBand(FilterType::HighShelf, 9000, 0, 0.7, DynMode::Below, -45, 2.5, 4, 20, 300)});
+    const std::string text = formatEqualizerApoConfig(s);
+    CHECK(text.find("# WindowsEQ Dynamic 2: Mode Above") != std::string::npos); // a comment to Equalizer APO
+    EqSettings back;
+    std::vector<std::string> w;
+    CHECK(parseEqualizerApoConfig(text, back, w));
+    CHECK(w.empty());
+    CHECK(back.numBands == 3);
+    CHECK(back.bands[0].dynamic == 0);
+    for (int i = 1; i < 3; ++i) {
+        const Band& a = s.bands[i];
+        const Band& b = back.bands[i];
+        CHECK(b.dynamic == 1);
+        CHECK(b.dynMode == a.dynMode);
+        CHECK_NEAR(b.thresholdDb, a.thresholdDb, 1e-9);
+        CHECK_NEAR(b.ratio, a.ratio, 1e-9);
+        CHECK_NEAR(b.rangeDb, a.rangeDb, 1e-9);
+        CHECK_NEAR(b.attackMs, a.attackMs, 1e-9);
+        CHECK_NEAR(b.releaseMs, a.releaseMs, 1e-9);
+        CHECK_NEAR(b.gainDb, a.gainDb, 1e-9);
+    }
+}
+
+TEST(dynamic_low_band_adds_little_distortion)
+{
+    // Working in its ratio region (not clamped by the range), a dynamic band's
+    // gain must not wobble with the bass waveform itself.
+    const double fs = 48000.0;
+    for (const double f : {40.0, 100.0, 1000.0}) {
+        const EqSettings s =
+            makeSettings({dynBand(FilterType::LowShelf, 2 * f, 0, 0.71, DynMode::Above, -30, 2, -24, 5, 150)});
+        Equalizer eq;
+        eq.prepare(fs, 2);
+        eq.setSettings(s, true);
+        std::vector<float> a = sine(f, fs, 96000, 2, 0.3); // -10.5 dBFS: ~10 dB of cut
+        processChunked(eq, a, 2);
+        const double snr = sineSnrDb(a, 2, 48000, 48000, f / fs);
+        std::printf("    %4.0f Hz, %.1f dB of cut: SNR %.1f dB\n", f, eq.dynamicGainDb(0), snr);
+        CHECK(snr > 60.0); // distortion + noise below 0.1 %
+    }
+}
+
+TEST(dynamic_boost_counts_in_auto_preamp)
+{
+    const EqSettings s = makeSettings({dynBand(FilterType::Peaking, 1000, 3, 1.0, DynMode::Below, -40, 2, 6, 5, 100)});
+    CHECK_NEAR(maxBoostDb(s, 2, 48000.0), 9.0, 0.05); // static +3 plus up to +6 dynamic
+}
+
 // ---------------------------------------------------------------- main
 
 int main()

@@ -138,6 +138,78 @@ const char* typeName(FilterType t)
     return "PK";
 }
 
+// Windows EQ extension, stored as a comment so Equalizer APO ignores it:
+//   # WindowsEQ Dynamic 3: Mode Above Threshold -30 dB Ratio 2 Range -6 dB Attack 5 ms Release 120 ms
+// It follows its Filter line; the number is that filter's position.
+void parseDynamicLine(std::string_view rest, EqSettings& out, std::vector<std::string>& warnings, int lineNo)
+{
+    const size_t colon = rest.find(':');
+    if (colon == std::string_view::npos)
+        return;
+    const std::vector<std::string_view> key = tokens(rest.substr(0, colon));
+    if (key.size() < 2 || !iequal(key[1], "Dynamic"))
+        return; // some other (future) Windows EQ extension
+    if (out.numBands == 0) {
+        warn(warnings, lineNo, "Dynamic settings before any filter; ignored");
+        return;
+    }
+    uint32_t index = out.numBands - 1; // normally: the filter just above
+    if (key.size() >= 3)
+        if (const auto n = number(key[2]); n && *n >= 1 && *n <= out.numBands && *n == std::floor(*n))
+            index = static_cast<uint32_t>(*n) - 1;
+    Band& b = out.bands[index];
+    if (!supportsDynamics(b.type)) {
+        warn(warnings, lineNo, "Dynamic settings only apply to peak and shelf filters; ignored");
+        return;
+    }
+    const std::vector<std::string_view> t = tokens(rest.substr(colon + 1));
+    Band d = b;
+    d.dynamic = 1;
+    size_t i = 0;
+    bool bad = false;
+    while (i < t.size() && !bad) {
+        const std::string_view k = t[i++];
+        if (iequal(k, "Mode")) {
+            bad = i >= t.size() || !(iequal(t[i], "Above") || iequal(t[i], "Below"));
+            if (!bad)
+                d.dynMode = iequal(t[i++], "Below") ? DynMode::Below : DynMode::Above;
+        } else if (iequal(k, "Off")) {
+            d.dynamic = 0;
+        } else if (iequal(k, "Threshold")) {
+            const auto v = numberWithUnit(t, i, "dB");
+            bad = !v;
+            if (!bad) d.thresholdDb = std::clamp(*v, -100.0, 0.0);
+        } else if (iequal(k, "Ratio")) {
+            std::string_view s = i < t.size() ? t[i] : std::string_view{};
+            if (s.size() > 2 && s.substr(s.size() - 2) == ":1")
+                s.remove_suffix(2);
+            const auto v = number(s);
+            bad = !v || *v < 1.0;
+            if (!bad) { d.ratio = std::min(*v, 100.0); ++i; }
+        } else if (iequal(k, "Range")) {
+            const auto v = numberWithUnit(t, i, "dB");
+            bad = !v;
+            if (!bad) d.rangeDb = std::clamp(*v, -30.0, 30.0);
+        } else if (iequal(k, "Attack")) {
+            const auto v = numberWithUnit(t, i, "ms");
+            bad = !v || *v <= 0;
+            if (!bad) d.attackMs = std::min(*v, 1000.0);
+        } else if (iequal(k, "Release")) {
+            const auto v = numberWithUnit(t, i, "ms");
+            bad = !v || *v <= 0;
+            if (!bad) d.releaseMs = std::min(*v, 5000.0);
+        } else {
+            warn(warnings, lineNo, "Dynamic: unexpected \"" + std::string(k) + "\"; rest of line ignored");
+            break;
+        }
+    }
+    if (bad) {
+        warn(warnings, lineNo, "Dynamic: malformed value; dynamic settings ignored");
+        return;
+    }
+    b = d;
+}
+
 } // namespace
 
 bool parseEqualizerApoConfig(std::string_view text, EqSettings& out, std::vector<std::string>& warnings)
@@ -154,6 +226,15 @@ bool parseEqualizerApoConfig(std::string_view text, EqSettings& out, std::vector
         std::string_view line = text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
         pos = nl == std::string_view::npos ? text.size() + 1 : nl + 1;
         ++lineNo;
+
+        // "# WindowsEQ ..." comments carry Windows EQ's own settings.
+        if (const std::string_view raw = trim(line); !raw.empty() && raw.front() == '#') {
+            const std::string_view rest = trim(raw.substr(1));
+            if (rest.size() >= 9 && iequal(rest.substr(0, 9), "WindowsEQ")) {
+                parseDynamicLine(rest, out, warnings, lineNo);
+                continue;
+            }
+        }
 
         if (const size_t hash = line.find('#'); hash != std::string_view::npos)
             line = line.substr(0, hash);
@@ -341,6 +422,14 @@ std::string formatEqualizerApoConfig(const EqSettings& s)
             std::snprintf(buf, sizeof buf, "Filter %d: %s %s Fc %.6g Hz Q %.6g\n", i + 1, b.enabled ? "ON" : "OFF",
                           typeName(b.type), b.frequencyHz, b.q);
         out += buf;
+        if (b.dynamic && gainType) {
+            std::snprintf(buf, sizeof buf,
+                          "# WindowsEQ Dynamic %d: Mode %s Threshold %.4g dB Ratio %.4g Range %.4g dB Attack %.4g ms "
+                          "Release %.4g ms\n",
+                          i + 1, b.dynMode == DynMode::Below ? "Below" : "Above", b.thresholdDb, b.ratio, b.rangeDb,
+                          b.attackMs, b.releaseMs);
+            out += buf;
+        }
     }
     return out;
 }

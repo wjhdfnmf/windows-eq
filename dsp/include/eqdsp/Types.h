@@ -22,15 +22,37 @@ enum class FilterType : uint32_t {
 
 // Plain, fixed-layout structs so they can be placed in shared memory between
 // the control app and the APO later. Booleans are uint32_t for stable layout.
+enum class DynMode : uint32_t {
+    Above = 0, // act while the band's level is above the threshold (tame, de-ess)
+    Below = 1, // act while it is below the threshold (lift quiet content)
+};
+
 struct Band {
     FilterType type = FilterType::Peaking;
     uint32_t enabled = 1;
     uint32_t channelMask = kAllChannels;   // bit N = applies to channel N
-    uint32_t reserved = 0;
+    uint32_t dynamic = 0;                  // 1 = dynamic band (Peaking / shelves only)
     double frequencyHz = 1000.0;
     double gainDb = 0.0;                   // used by Peaking / shelves only
     double q = 0.70710678118654752;
+
+    // Dynamics: the band's level (measured through a band-pass at the band
+    // for peaks, or a low/high-pass for shelves) moves its gain between
+    // gainDb and gainDb + rangeDb.
+    double thresholdDb = -30.0;            // dBFS (sine-referenced), 6 dB soft knee
+    double ratio = 2.0;                    // >= 1; gain change = excess * (1 - 1/ratio)
+    double rangeDb = -6.0;                 // max gain change; < 0 cuts, > 0 boosts
+    double attackMs = 5.0;
+    double releaseMs = 120.0;
+    DynMode dynMode = DynMode::Above;
+    uint32_t dynReserved = 0;
 };
+
+inline bool supportsDynamics(FilterType t)
+{
+    return t == FilterType::Peaking || t == FilterType::LowShelf || t == FilterType::HighShelf;
+}
+inline bool isDynamic(const Band& b) { return b.dynamic != 0 && b.enabled != 0 && supportsDynamics(b.type); }
 
 struct EqSettings {
     uint32_t numBands = 0;

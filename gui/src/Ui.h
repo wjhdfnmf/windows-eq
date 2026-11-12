@@ -78,7 +78,7 @@ struct Input {
     bool shift = false, ctrl = false;
 };
 
-enum class NumKind { Freq, Db, Q, Plain };
+enum class NumKind { Freq, Db, Q, Plain, Ms, Ratio };
 struct NumberSpec {
     NumKind kind = NumKind::Plain;
     double lo = 0, hi = 1;

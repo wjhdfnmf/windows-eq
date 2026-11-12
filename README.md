@@ -12,6 +12,10 @@ rights to install.
 - **Up to 32 bands:** peak, low/high shelf, low/high pass, band pass, notch
   and all pass. Each band can apply to both channels, the left only or the
   right only.
+- **Dynamic EQ:** a peak or shelf band can react to the music. For example,
+  it can cut harsh highs or sibilance only when they get loud, or lift the
+  bass only when it's quiet. You set threshold, ratio, range, attack and
+  release, and see the band move live.
 - **Interactive graph:** drag bands with the mouse, scroll to change their
   width, and see each band's curve and the combined curve.
 - **Live spectrum analyzer:** shows your audio **before and after** the EQ.
@@ -74,6 +78,32 @@ rights to install.
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Delete` | Remove the selected band |
 | `F12` | Show frame timings |
+
+### Dynamic EQ
+
+Select a peak or shelf band and switch **DYNAMIC** on in the band editor. The
+band's gain then moves with the level of the music in that band's range.
+
+| Setting | What it does |
+|---|---|
+| **Mode** | *Above threshold*: act when this band gets loud (tame, de-ess). *Below threshold*: act when it's quiet (lift) |
+| **Threshold** | The level (dBFS) in the band's range where the dynamics start |
+| **Ratio** | How strongly the gain follows the level past the threshold (2:1 gentle, 10:1 hard) |
+| **Range** | The most the gain can move: −8 dB cuts up to 8 dB, +6 dB boosts up to 6 dB |
+| **Attack / Release** | How fast it reacts, and how fast it recovers |
+
+**On the graph:**
+- a shaded area shows how far the band can move;
+- a small marker and a bright curve show what it's doing right now;
+- the **NOW** meter in the editor shows the live gain change.
+
+Good starting points:
+- the built-in **De-esser (dynamic)**;
+- **Tame harshness (dynamic)**;
+- **Dynamic loudness**, which lifts bass and treble only while they're quiet.
+
+Dynamic settings are saved in preset files as `# WindowsEQ Dynamic …` comment
+lines, which Equalizer APO and other tools ignore.
 
 Tips:
 

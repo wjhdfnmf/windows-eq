@@ -975,6 +975,8 @@ int renderToPng(const std::wstring& path, int w, int h, double seconds, float mx
         return 2;
     g.ui.setTarget(rt.Get());
     g.appReady = g.app.init(nullptr, route);
+    if (!route)
+        g.app.setDemoSignal(true); // previews show a live spectrum and live dynamics
     const int frames = std::max(1, static_cast<int>(seconds * 60));
     for (int i = 0; i < frames; ++i) {
         g.ui.in.mx = mx;
