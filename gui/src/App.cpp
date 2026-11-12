@@ -1055,7 +1055,7 @@ void App::drawToolbar(Ui& ui, Rect r)
             if (hover && ui.in.pressed)
                 ui.setActive(id);
             if (ui.active() == id && ui.in.released) {
-                if (hover && !active)
+                if (hover) // either button toggles between A and B
                     switchAB(ui);
                 ui.setActive(0);
             }
@@ -1064,8 +1064,10 @@ void App::drawToolbar(Ui& ui, Rect r)
             ui.text(side == 0 ? L"A" : L"B", br, active ? rgb(0x0B1420) : enabled ? col::text : col::textFaint,
                     Font::Bold, Align::Center);
             if (hover)
-                ui.tooltip(side == 0 ? L"A: your EQ"
-                                     : L"B: the snapshot from " + snapshotTime_ + L" (edits here change the snapshot)");
+                ui.tooltip(!hasSnapshot_ ? L"A: your EQ (save a snapshot to compare with B)"
+                                         : std::wstring(onB_ ? L"Hearing B" : L"Hearing A") +
+                                               L" — click to switch.  A: your EQ, B: snapshot from " +
+                                               snapshotTime_);
         }
         ui.stroke(Rect{x, y, 2 * sw, h}, onB_ ? col::accent : col::border, 6);
         x += 2 * sw;
