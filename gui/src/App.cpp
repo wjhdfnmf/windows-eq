@@ -618,8 +618,10 @@ void App::runDeferred()
         break;
     }
     case Deferred::ConfirmOverwrite: {
-        const std::wstring msg = L"A preset named \"" + pendingName_ + L"\" already exists. Replace it?";
-        if (MessageBoxW(hwnd_, msg.c_str(), L"Windows EQ", MB_YESNO | MB_ICONQUESTION) == IDYES)
+        const std::wstring msg = L"Replace your saved preset \"" + pendingName_ +
+                                 L"\" with the current EQ?\n\nThe previous version of that preset will be lost.";
+        if (MessageBoxW(hwnd_, msg.c_str(), L"Overwrite preset", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) ==
+            IDYES)
             saveUserPreset(pendingName_);
         break;
     }
@@ -990,9 +992,15 @@ void App::drawToolbar(Ui& ui, Rect r)
     const bool isUser = !modified_ && presetSel_ >= 0 && presetSel_ < static_cast<int>(userPresets_.size());
     const bool canOverwrite = std::find(userPresets_.begin(), userPresets_.end(), presetName_) != userPresets_.end();
     if (ui.iconButton(makeId("save"), Rect{x, y, h, h}, L"",
-                      canOverwrite ? L"Save to \"" + presetName_ + L"\"" : L"Save as a new preset")) {
-        if (canOverwrite)
-            saveUserPreset(presetName_);
+                      canOverwrite ? (modified_ ? L"Save changes to \"" + presetName_ + L"\" (asks first)"
+                                                : L"No changes to save")
+                                   : std::wstring(L"Save as a new preset"),
+                      !canOverwrite || modified_)) {
+        if (canOverwrite) {
+            // Overwriting one of your presets: ask first (in runDeferred).
+            pendingName_ = presetName_;
+            deferred_ = Deferred::ConfirmOverwrite;
+        }
         else {
             saveAsOpen_ = true;
             saveAsName_ = modified_ ? L"" : presetName_;

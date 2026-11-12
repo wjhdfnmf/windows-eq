@@ -30,6 +30,22 @@
   - Snapshots last until you close the app.
 - **Toolbar:** Import and Export are now icon buttons. On narrow windows,
   Reset and the analyzer menu shrink to fit.
+- **11 new built-in presets:**
+  - *Speech / Podcast clarity*, *Movie dialogue*, *Night mode*, *Gaming:
+    footsteps*;
+  - *Laptop / small speakers*, *Warm (less fatigue)*, *Bright / airy*;
+  - *Boomy bass tamer (dynamic)*, *Hiss reducer (dynamic)*;
+  - *Hum removal (50 Hz)* and *(60 Hz)*.
+
+  `WindowsEQ.exe --self-test` checks every built-in: it round-trips through
+  the preset format, has sane parameters, can't clip (the preamp covers its
+  largest boost, dynamic boosts included), and processes audio cleanly.
+
+### Changed
+
+- **Asks before overwriting your presets:** saving over one of your own
+  presets now asks first, with No as the default. **Save** is greyed out
+  when there's nothing new to save.
 
 ### Quality
 

@@ -3,6 +3,7 @@
 
 #include "App.h"
 #include "CrashHandler.h"
+#include "Presets.h"
 #include "Storage.h"
 #include "Ui.h"
 
@@ -1273,7 +1274,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
             return 2;
         g.appReady = g.app.init(nullptr, false);
         std::wstring report;
-        const bool ok = g.app.selfTestSnapshot(g.ui, report);
+        const bool snapshotOk = g.app.selfTestSnapshot(g.ui, report);
+        const bool presetsOk = checkBuiltinPresets(report);
+        const bool ok = snapshotOk && presetsOk;
         FILE* f = nullptr;
         if (_wfopen_s(&f, argv[2], L"w, ccs=UTF-8") == 0 && f) {
             fputws(report.c_str(), f);

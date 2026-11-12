@@ -115,6 +115,14 @@ Tips:
   **Import**, then **Save as** to keep it as a preset.
 - **To hear the EQ working,** pick **Built-in · Telephone (test)** and
   press `B` a few times.
+- **Built-in presets for common situations:**
+  - **Voice and video:** *Speech / Podcast clarity*, *Movie dialogue*,
+    *Night mode*, *Gaming: footsteps*.
+  - **Speakers and comfort:** *Laptop / small speakers*, *Warm (less
+    fatigue)*, *Bright / airy*, *Boomy bass tamer (dynamic)*.
+  - **Repair:** *Hiss reducer (dynamic)*, *Hum removal (50 Hz)* and *(60 Hz)*.
+
+  Every built-in preset has its preamp set so it can't clip.
 - **Avoid clipping:** if the **Auto** button under the preamp turns blue,
   your boosts could clip. Click it.
 - **The tray:** closing the window hides Windows EQ there. Click the icon to
