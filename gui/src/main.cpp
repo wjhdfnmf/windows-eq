@@ -21,6 +21,7 @@
 #include <wincodec.h>
 #include <wtsapi32.h>
 #include <pdh.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cmath>
@@ -47,10 +48,12 @@ struct Host {
     ComPtr<ID2D1DeviceContext> dc;
     ComPtr<IDXGISwapChain1> swap;
     ComPtr<ID2D1Bitmap1> target;
-    // Default renderer: the proven Direct2D window target. The flip-model
-    // renderer above (less GPU) is opt-in while a system crash seen during
-    // its testing is unexplained (config "renderer=flip").
+    // Renderer: false = Direct2D window target ("compatible"), true = the
+    // flip-model swap chain above ("low-GPU"). See chooseRenderer().
     bool useFlip = false;
+    std::wstring flipFallbackReason; // why the low-GPU renderer is off this session
+    int flipDeviceLosses = 0;        // GPU device losses within the current minute
+    double flipLossWindowStart = 0;
     ComPtr<ID2D1HwndRenderTarget> hwndRt;
     Ui ui;
     App app;
@@ -63,7 +66,8 @@ struct Host {
     double perfLastFrameMs = 0, perfLastDrawMs = 0;
     // Diagnostics query (registered message "WindowsEQ.Diagnostics"):
     // wParam 0 -> frames drawn so far; 1 -> flags (1 audio active,
-    // 2 routing running, 4 window counts as seen).
+    // 2 routing running, 4 window counts as seen, 8 foreground,
+    // 16 low-GPU renderer drawing).
     UINT msgDiagnostics = 0;
     LONG_PTR framesDrawn = 0;
 
@@ -353,22 +357,76 @@ void trayBalloon(const wchar_t* title, const wchar_t* text)
 // ------------------------------------------------------------------ rendering
 
 // Two renderers:
-//  - default: ID2D1HwndRenderTarget, the proven Direct2D window target;
-//  - opt-in "low-GPU" (config renderer=flip): Direct3D 11 + DXGI flip-model
-//    swap chain + Direct2D 1.1 device context. The compositor uses its back
-//    buffer directly, without a full-window copy per frame (less than half
-//    the GPU in measurements). A system crash (DPC watchdog, inconclusive
-//    dump) happened while it was being stress-tested, so it isn't the
-//    default until that's understood.
+//  - "low-GPU" (the default; config renderer=flip): Direct3D 11 + DXGI flip-model swap
+//    chain + Direct2D 1.1 device context. The compositor uses its back
+//    buffer directly instead of copying the whole window every frame.
+//  - "compatible" (renderer=legacy): ID2D1HwndRenderTarget, the Direct2D
+//    window target. Works wherever Direct2D does (including software
+//    rendering and remote desktop).
+// The low-GPU renderer protects itself: it falls back to the compatible one
+// for the session if there's no hardware Direct3D 11 device, the swap chain
+// can't be created, or the GPU device is lost twice within a minute; and if
+// Windows EQ didn't exit cleanly while using it (a crash, a blue screen, a
+// power cut), the next start uses the compatible renderer until re-enabled.
 
-// config.ini "renderer=flip" opts in; WEQ_RENDERER=flip|legacy overrides (benchmarks).
+// config.ini "renderer=flip|legacy"; WEQ_RENDERER overrides (benchmarks, tests).
 bool flipRendererConfigured()
 {
     wchar_t env[16];
     if (GetEnvironmentVariableW(L"WEQ_RENDERER", env, 16) > 0)
         return _wcsicmp(env, L"flip") == 0;
-    return configGet(L"renderer", L"legacy") == L"flip";
+    return configGet(L"renderer", App::kDefaultRenderer) == L"flip";
 }
+
+// Test hooks for the fallbacks: WEQ_TEST_FLIP=nodevice (as if there were no
+// hardware Direct3D 11 device) or devicelost (every Present loses the device).
+bool flipTestHook(const wchar_t* what)
+{
+    wchar_t env[16];
+    return GetEnvironmentVariableW(L"WEQ_TEST_FLIP", env, 16) > 0 && _wcsicmp(env, what) == 0;
+}
+
+void publishRendererStatus()
+{
+    if (g.appReady)
+        g.app.setRendererStatus(g.useFlip, g.flipFallbackReason);
+}
+
+// The low-GPU renderer is unusable this session: switch to the compatible one.
+void fallBackToCompatible(const std::wstring& reason)
+{
+    g.useFlip = false;
+    g.flipFallbackReason = reason;
+    logError(L"renderer", L"low-GPU renderer turned off: " + reason);
+    publishRendererStatus();
+}
+
+// Called when the app starts (atStartup) or the user turns the low-GPU
+// renderer on or retries it. Applies the crash guard: an unclean exit while
+// it was drawing pauses it (config flipPaused) until the user re-enables it.
+void chooseRenderer(bool atStartup)
+{
+    const bool wantFlip = flipRendererConfigured();
+    g.flipFallbackReason.clear();
+    g.flipDeviceLosses = 0;
+    if (wantFlip && atStartup && configGet(L"flipCleanExit", L"1") == L"0") {
+        configSet(L"flipPaused", L"1");
+        logError(L"renderer", L"low-GPU renderer paused: Windows EQ didn't close normally while using it");
+    }
+    if (!atStartup)
+        configSet(L"flipPaused", L"0"); // the user asked for it
+    if (wantFlip && configGet(L"flipPaused", L"0") == L"1") {
+        g.useFlip = false;
+        g.flipFallbackReason = L"Windows EQ didn't close normally while using it";
+    } else {
+        g.useFlip = wantFlip;
+    }
+    // Mark "running with the low-GPU renderer" until a clean exit clears it.
+    configSet(L"flipCleanExit", g.useFlip ? L"0" : L"1");
+    publishRendererStatus();
+}
+
+void markCleanExit() { configSet(L"flipCleanExit", L"1"); }
 
 ID2D1RenderTarget* activeTarget()
 {
@@ -409,26 +467,44 @@ bool bindBackBuffer()
     return true;
 }
 
-void createFlipTarget()
+// Returns false (with a reason) when the low-GPU renderer can't run here.
+bool createFlipTarget(std::wstring& why)
 {
     if (g.dc)
-        return;
+        return true;
+    if (flipTestHook(L"nodevice")) {
+        why = L"no hardware Direct3D 11 graphics device (test)";
+        return false;
+    }
     if (!g.d2dDevice) {
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                             D3D_FEATURE_LEVEL_10_0};
         const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels,
-                                       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &g.d3d, nullptr,
-                                       nullptr);
-        if (FAILED(hr)) // no usable GPU (remote desktop, broken driver): software rendering
-            hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, levels,
-                                   static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &g.d3d, nullptr, nullptr);
+        // Hardware only: without a GPU (remote desktop, basic display driver)
+        // the compatible renderer is the better choice.
+        const HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels,
+                                             static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &g.d3d,
+                                             nullptr, nullptr);
         ComPtr<IDXGIDevice> dxgi;
-        if (FAILED(hr) || FAILED(g.d3d.As(&dxgi)) || FAILED(g.d2d->CreateDevice(dxgi.Get(), &g.d2dDevice)))
-            return;
+        if (FAILED(hr) || FAILED(g.d3d.As(&dxgi))) {
+            why = L"no hardware Direct3D 11 graphics device";
+            g.d3d.Reset();
+            return false;
+        }
+        // Queue at most one frame: less GPU work in flight and lower latency.
+        ComPtr<IDXGIDevice1> dxgi1;
+        if (SUCCEEDED(g.d3d.As(&dxgi1)))
+            dxgi1->SetMaximumFrameLatency(1);
+        if (FAILED(g.d2d->CreateDevice(dxgi.Get(), &g.d2dDevice))) {
+            why = L"Direct2D couldn't use the graphics device";
+            g.d3d.Reset();
+            return false;
+        }
     }
-    if (FAILED(g.d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &g.dc)))
-        return;
+    if (FAILED(g.d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &g.dc))) {
+        why = L"couldn't create a Direct2D device context";
+        return false;
+    }
     if (!g.swap) {
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGIAdapter> adapter;
@@ -436,7 +512,8 @@ void createFlipTarget()
         if (FAILED(g.d3d.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter)) ||
             FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
             g.dc.Reset();
-            return;
+            why = L"DXGI 1.2 isn't available";
+            return false;
         }
         RECT rc;
         GetClientRect(g.hwnd, &rc);
@@ -452,28 +529,37 @@ void createFlipTarget()
         sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
         if (FAILED(factory->CreateSwapChainForHwnd(g.d3d.Get(), g.hwnd, &sd, nullptr, nullptr, &g.swap))) {
             g.dc.Reset();
-            return;
+            why = L"couldn't create a flip-model swap chain";
+            return false;
         }
         factory->MakeWindowAssociation(g.hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
     if (!bindBackBuffer()) {
         g.dc.Reset();
-        return;
+        why = L"couldn't draw into the swap chain";
+        return false;
     }
     g.ui.setTarget(g.dc.Get());
+    return true;
 }
+
+void discardTarget(bool everything = false);
 
 void createTarget()
 {
-    if (g.useFlip)
-        createFlipTarget();
-    else
-        createLegacyTarget();
+    if (g.useFlip) {
+        std::wstring why;
+        if (createFlipTarget(why))
+            return;
+        discardTarget(true);
+        fallBackToCompatible(why);
+    }
+    createLegacyTarget();
 }
 
 // Drops the render target (and with `everything`, the swap chain and the
 // GPU device too); the next frame recreates what is missing.
-void discardTarget(bool everything = false)
+void discardTarget(bool everything)
 {
     g.ui.releaseTarget();
     g.hwndRt.Reset();
@@ -562,7 +648,9 @@ void render()
         ++g.framesDrawn;
     if (SUCCEEDED(hr) && g.useFlip) { // the window target presents in EndDraw
         // Vsync (interval 1) normally; benchmarks present immediately.
-        const HRESULT pr = g.swap->Present(g.presentImmediately ? 0 : 1, 0);
+        HRESULT pr = g.swap->Present(g.presentImmediately ? 0 : 1, 0);
+        if (flipTestHook(L"devicelost"))
+            pr = DXGI_ERROR_DEVICE_REMOVED;
         if (pr == DXGI_ERROR_DEVICE_REMOVED || pr == DXGI_ERROR_DEVICE_RESET)
             hr = D2DERR_RECREATE_TARGET;
     }
@@ -577,9 +665,21 @@ void render()
     g.perfFps += (1.0 / dt - g.perfFps) * 0.1;
     // Lost GPU device: recreate everything. A frame that threw may have left
     // clips pushed: start from a fresh device context.
-    if (hr == D2DERR_RECREATE_TARGET)
+    if (hr == D2DERR_RECREATE_TARGET) {
         discardTarget(true);
-    else if (frameFailed || FAILED(hr))
+        if (g.useFlip) {
+            // Losing the GPU device repeatedly points at a driver problem:
+            // stop using the low-GPU renderer for this session.
+            const double t = static_cast<double>(end.QuadPart) / g.qpf.QuadPart;
+            if (t - g.flipLossWindowStart > 60) {
+                g.flipLossWindowStart = t;
+                g.flipDeviceLosses = 0;
+            }
+            logError(L"renderer", L"graphics device lost (low-GPU renderer)");
+            if (++g.flipDeviceLosses >= 2)
+                fallBackToCompatible(L"the graphics device was lost twice within a minute");
+        }
+    } else if (frameFailed || FAILED(hr))
         discardTarget();
     SetCursor(LoadCursorW(nullptr, g.ui.cursor()));
     trayUpdate(false);
@@ -695,6 +795,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             flags |= 4;
         if (GetForegroundWindow() == hwnd)
             flags |= 8;
+        if (g.useFlip)
+            flags |= 16;
         return flags;
     }
     if (msg == g.taskbarCreated && g.taskbarCreated) { // Explorer restarted
@@ -896,7 +998,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case App::kMsgRendererChanged:
         discardTarget(true);
-        g.useFlip = flipRendererConfigured();
+        chooseRenderer(false);
         g.lastFrame.QuadPart = 0;
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -936,6 +1038,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             saveWindowPlacement();
             g.app.shutdown();
             g.appReady = false;
+            markCleanExit();
         }
         return 0;
     case WM_DESTROY:
@@ -947,6 +1050,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g.appReady)
             g.app.shutdown();
         g.appReady = false;
+        markCleanExit();
         PostQuitMessage(0);
         return 0;
     default:
@@ -1075,11 +1179,15 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
     runCase(L"band panel only", 2, false, 11);
     runCase(L"top/tool/status bars only", 2, false, 7);
 
-    // Paced runs (vsync on, like the real app), measuring this process's
-    // GPU 3D-engine utilisation with Windows' own performance counter.
+    // Paced runs (vsync on, like the real app), measuring the GPU 3D-engine
+    // utilisation of this process and of the desktop compositor (dwm.exe)
+    // with Windows' own performance counter. Both count: the window target
+    // copies each frame inside this process, while with the flip model the
+    // compositor reads the back buffer itself. DWM's share is reported
+    // relative to a baseline measured just before, while this window draws nothing.
     struct Paced {
         const wchar_t* name;
-        double fps, gpuPct, cpuPct;
+        double fps, gpuPct, dwmPct, cpuPct; // dwmPct: above the case's own baseline
     };
     std::vector<Paced> paced;
     discardTarget();
@@ -1090,6 +1198,38 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
     swprintf(path, 256, L"\\GPU Engine(pid_%lu_*engtype_3D)\\Utilization Percentage", GetCurrentProcessId());
     const bool pdhOk = PdhOpenQueryW(nullptr, 0, &query) == ERROR_SUCCESS &&
                        PdhAddEnglishCounterW(query, path, 0, &counter) == ERROR_SUCCESS;
+    PDH_HCOUNTER dwmCounter = nullptr;
+    DWORD dwmPid = 0;
+    if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); snap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{sizeof(pe)};
+        for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe))
+            if (_wcsicmp(pe.szExeFile, L"dwm.exe") == 0) {
+                dwmPid = pe.th32ProcessID;
+                break;
+            }
+        CloseHandle(snap);
+    }
+    if (pdhOk && dwmPid) {
+        swprintf(path, 256, L"\\GPU Engine(pid_%lu_*engtype_3D)\\Utilization Percentage", dwmPid);
+        if (PdhAddEnglishCounterW(query, path, 0, &dwmCounter) != ERROR_SUCCESS)
+            dwmCounter = nullptr;
+    }
+    auto sumCounter = [](PDH_HCOUNTER c) {
+        if (!c)
+            return -1.0;
+        DWORD size = 0, count = 0;
+        PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, &count, nullptr);
+        std::vector<BYTE> buf(size);
+        auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buf.data());
+        if (!size || PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, &size, &count, items) != ERROR_SUCCESS)
+            return -1.0;
+        double v = 0;
+        for (DWORD i = 0; i < count; ++i)
+            v += items[i].FmtValue.doubleValue;
+        return v;
+    };
+    // Before each case, 3 s without drawing give the compositor's baseline
+    // (other windows keep it busy by varying amounts).
     auto pacedCase = [&](const wchar_t* name, double fps, int analyzerMode, unsigned skipMask) {
         g.app.setAnalyzerMode(analyzerMode);
         g.ui.skipText = false;
@@ -1098,10 +1238,17 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
             pump();
             render();
         }
-        FILETIME c, e, k0, u0, k1, u1;
-        GetProcessTimes(GetCurrentProcess(), &c, &e, &k0, &u0);
+        double dwmBase = -1;
         if (pdhOk)
             PdhCollectQueryData(query);
+        for (const double t0 = nowSec(); nowSec() - t0 < 3.0;) {
+            pump();
+            Sleep(5);
+        }
+        if (pdhOk && PdhCollectQueryData(query) == ERROR_SUCCESS)
+            dwmBase = sumCounter(dwmCounter);
+        FILETIME c, e, k0, u0, k1, u1;
+        GetProcessTimes(GetCurrentProcess(), &c, &e, &k0, &u0);
         const double start = nowSec();
         int n = 0;
         while (nowSec() - start < 5.0) {
@@ -1115,25 +1262,17 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
             ++n;
         }
         const double wall = nowSec() - start;
-        double gpu = -1;
+        double gpu = -1, dwm = -1;
         if (pdhOk && PdhCollectQueryData(query) == ERROR_SUCCESS) {
-            DWORD size = 0, count = 0;
-            PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &size, &count, nullptr);
-            std::vector<BYTE> buf(size);
-            auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buf.data());
-            if (size && PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &size, &count, items) == ERROR_SUCCESS) {
-                gpu = 0;
-                for (DWORD i = 0; i < count; ++i)
-                    gpu += items[i].FmtValue.doubleValue;
-            }
+            gpu = sumCounter(counter);
+            dwm = sumCounter(dwmCounter);
         }
         GetProcessTimes(GetCurrentProcess(), &c, &e, &k1, &u1);
         auto ft = [](FILETIME f) { return (static_cast<ULONGLONG>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
         const double cpu = (ft(k1) - ft(k0) + ft(u1) - ft(u0)) * 1e-7;
-        paced.push_back({name, n / wall, gpu, cpu / wall * 100.0});
+        const double dwmPlus = dwm >= 0 && dwmBase >= 0 ? dwm - dwmBase : -1;
+        paced.push_back({name, n / wall, gpu, dwmPlus, cpu / wall * 100.0});
     };
-    // The app's real rates: analyzer 24 fps (active window) / 12 fps (inactive),
-    // meters only 15 fps, idle 2 fps.
     pacedCase(L"24 fps, analyzer (active window)", 24, 0, 0);
     pacedCase(L"12 fps, analyzer (inactive window)", 12, 0, 0);
     pacedCase(L"15 fps, analyzer off (meters)", 15, 2, 0);
@@ -1145,15 +1284,19 @@ int runBench(HINSTANCE inst, const std::wstring& outPath, int frames)
     FILE* f = nullptr;
     if (_wfopen_s(&f, outPath.c_str(), L"w") == 0 && f) {
         fwprintf(f, L"Windows EQ benchmark, %.0f DPI, renderer: %s\n\nUnpaced (vsync off), %d frames per case:\n",
-                 g.dpi, g.useFlip ? L"flip model (low-GPU)" : L"window target (default)", frames);
+                 g.dpi, g.useFlip ? L"low-GPU (flip model)" : L"compatible (window target)", frames);
         fwprintf(f, L"%-34s %8s %10s %10s %8s %9s %9s\n", L"case", L"fps", L"frame ms", L"EndDraw", L"CPU %",
                  L"changes", L"rebuilds");
         for (const Result& r : results)
             fwprintf(f, L"%-34s %8.0f %10.2f %10.2f %8.1f %9llu %9llu\n", r.name, r.fps, r.frameMs, r.endDrawMs,
                      r.cpuPct, r.settingsChanges, r.curveRebuilds);
-        fwprintf(f, L"\nPaced (vsync on), 5 s per case:\n%-34s %8s %8s %8s\n", L"case", L"fps", L"GPU %", L"CPU %");
+        fwprintf(f,
+                 L"\nPaced (vsync on), 5 s per case. GPU %%: this app; DWM +%%: compositor above its baseline;"
+                 L" total: both.\n%-34s %8s %8s %8s %8s %8s\n",
+                 L"case", L"fps", L"GPU %", L"DWM +%", L"total", L"CPU %");
         for (const Paced& p : paced)
-            fwprintf(f, L"%-34s %8.1f %8.2f %8.2f\n", p.name, p.fps, p.gpuPct, p.cpuPct);
+            fwprintf(f, L"%-34s %8.1f %8.2f %8.2f %8.2f %8.2f\n", p.name, p.fps, p.gpuPct, p.dwmPct,
+                     p.gpuPct + std::max(0.0, p.dwmPct), p.cpuPct);
         fclose(f);
     }
     g.app.shutdown();
@@ -1289,6 +1432,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
             return 2;
         return runBench(inst, argv[2], argc >= 4 ? std::max(50, _wtoi(argv[3])) : 300);
     }
+    // WindowsEQ.exe --set-renderer flip|legacy: change the setting and tell
+    // a running instance to switch (scripts and the evaluation tools).
+    if (argc >= 3 && _wcsicmp(argv[1], L"--set-renderer") == 0) {
+        const bool flip = _wcsicmp(argv[2], L"flip") == 0;
+        if (!flip && _wcsicmp(argv[2], L"legacy") != 0)
+            return 2;
+        configSet(L"renderer", flip ? L"flip" : L"legacy");
+        configSet(L"flipPaused", L"0");
+        if (HWND existing = FindWindowW(inst::kMainWindowClass, nullptr))
+            PostMessageW(existing, App::kMsgRendererChanged, 0, 0);
+        return 0;
+    }
     const bool startInTray = hasArg(argc, argv, L"--tray");
     installCrashHandler();
 
@@ -1360,7 +1515,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
     if (FAILED(DwmSetWindowAttribute(g.hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark))))
         DwmSetWindowAttribute(g.hwnd, 19, &dark, sizeof(dark)); // Windows 10 before 20H1
 
+    chooseRenderer(true);
     g.appReady = g.app.init(g.hwnd);
+    publishRendererStatus();
     trayAdd();
     restoreWindowPlacement();
     if (startInTray) {

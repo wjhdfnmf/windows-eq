@@ -701,8 +701,12 @@ int App::showMenu(POINT pt, bool fromTray)
                 L"Start with Windows (in the tray)");
     AppendMenuW(menu, MF_STRING | (configGet(L"closeToTray", L"1") != L"0" ? MF_CHECKED : 0), kCloseToTray,
                 L"Keep running in the tray when closed");
-    AppendMenuW(menu, MF_STRING | (configGet(L"renderer", L"legacy") == L"flip" ? MF_CHECKED : 0), kRenderer,
-                L"Low-GPU renderer (experimental)");
+    const bool lowGpuChosen = configGet(L"renderer", kDefaultRenderer) == L"flip";
+    const std::wstring rendererLabel = lowGpuChosen && !lowGpuActive_
+                                           ? L"Low-GPU renderer (off: " + lowGpuFallback_ + L"; click to retry)"
+                                           : std::wstring(L"Low-GPU renderer");
+    AppendMenuW(menu, MF_STRING | (lowGpuChosen && lowGpuActive_ ? MF_CHECKED : 0), kRenderer,
+                rendererLabel.c_str());
     AppendMenuW(menu, MF_STRING, kSound, L"Windows Sound settings…");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kAbout, L"About Windows EQ");
@@ -733,14 +737,12 @@ int App::showMenu(POINT pt, bool fromTray)
     } else if (cmd == kCloseToTray) {
         configSet(L"closeToTray", configGet(L"closeToTray", L"1") != L"0" ? L"0" : L"1");
     } else if (cmd == kRenderer) {
-        const bool flip = configGet(L"renderer", L"legacy") != L"flip";
-        if (flip && MessageBoxW(hwnd_,
-                                L"The low-GPU renderer uses noticeably less graphics power, but a system crash "
-                                L"happened once while it was being tested and the cause isn't known yet.\n\n"
-                                L"Use it anyway?",
-                                L"Windows EQ", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        const bool chosen = configGet(L"renderer", kDefaultRenderer) == L"flip";
+        if (chosen && !lowGpuActive_) { // paused after a problem: try again
+            PostMessageW(hwnd_, kMsgRendererChanged, 0, 0);
             return result;
-        configSet(L"renderer", flip ? L"flip" : L"legacy");
+        }
+        configSet(L"renderer", chosen ? L"legacy" : L"flip");
         PostMessageW(hwnd_, kMsgRendererChanged, 0, 0);
     } else if (cmd == kSound) {
         ShellExecuteW(hwnd_, L"open", L"ms-settings:sound", nullptr, nullptr, SW_SHOWNORMAL);

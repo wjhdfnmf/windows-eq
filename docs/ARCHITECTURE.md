@@ -140,19 +140,55 @@ the first ~40 s.
   - 8192-point FFT with a Hann window, at most 35 transforms per second;
   - smoothing in the power domain;
   - +3 dB/octave display tilt around 1 kHz.
-- **Rendering backends:**
-  - **Default:** `ID2D1HwndRenderTarget`, the Direct2D window target.
-  - **Opt-in "low-GPU" renderer** (`renderer=flip` in `config.ini`, or the
-    gear menu; `WEQ_RENDERER=flip|legacy` overrides it): Direct3D 11 device
-    → DXGI flip-model swap chain (`FLIP_DISCARD`, 2 buffers) → Direct2D 1.1
-    device context. It falls back to WARP when there's no GPU, and recovers
-    from device loss. The compositor uses its back buffer directly, so it
-    needs well under half the GPU per frame.
-  - **Why it's opt-in:** a DPC_WATCHDOG_VIOLATION bugcheck happened while it
-    was being stress-tested (rapid cover/minimize cycles). The kernel dump
-    was unreadable (`CORRUPT_MODULELIST`). The same machine's graphics stack
-    had been abnormally slow before the crash, which a clean reboot fixed, so
-    the renderer may be unrelated. It stays opt-in until that's known.
+- **Rendering backends** (gear menu → **Low-GPU renderer**; `renderer=flip|legacy`
+  in `config.ini`; `WEQ_RENDERER=flip|legacy` overrides it;
+  `WindowsEQ.exe --set-renderer flip|legacy` switches a running copy):
+  - **Low-GPU (default):** Direct3D 11 hardware device → DXGI flip-model
+    swap chain (`FLIP_DISCARD`, 2 buffers, at most 1 queued frame) →
+    Direct2D 1.1 device context. The compositor reads the back buffer
+    directly, so the full-window copy disappears.
+  - **Compatible** (`renderer=legacy`, and the automatic fallback):
+    `ID2D1HwndRenderTarget`, the Direct2D window target. It works wherever
+    Direct2D does, including software rendering and remote desktop. Each
+    frame is copied into the window's redirection surface, and the
+    compositor then composes that surface.
+  - The default lives in `App::kDefaultRenderer`. A `renderer=` line that the
+    user chose is kept across updates.
+  - **Measured** (NVIDIA GPU, 160 Hz display, 1320×820 window, demo audio; GPU 3D-engine
+    %, this app + the compositor's extra over its baseline; `--bench`,
+    alternating renderers, 4 rounds):
+
+    | Case | Compatible | Low-GPU |
+    |---|---|---|
+    | 24 fps analyzer (active window) | 13.3 + 8.3 = 21.6 | 8.3 + 0 = 8.3 |
+    | 12 fps analyzer (inactive window) | 7.4 + 4.7 = 12.1 | 4.9 + 0 = 4.9 |
+    | 15 fps meters | 7.9 + 6.0 = 14.0 | 4.6 + 0 = 4.6 |
+    | 2 fps idle | about 2.6 | about 3.7 (noise level) |
+
+    The real app agreed: 12.0 % → 6.4 % for the app and 10.2 % → 2.0 % for
+    `dwm.exe` while visible, CPU unchanged (about 4–5 %). Absolute numbers
+    depend on the GPU's clock state; the ratios are what's stable.
+  - **Safety nets for the low-GPU renderer:**
+    - no hardware Direct3D 11 device, no DXGI 1.2, or a swap chain that
+      can't be created → the compatible renderer for this session;
+    - the GPU device lost twice within a minute → the compatible renderer
+      for this session;
+    - **crash guard:** `flipCleanExit=0` is written while it draws and set
+      back to 1 on a normal exit (including Windows shutting down). If the
+      next start finds 0 (a crash, a blue screen, a power cut), it sets
+      `flipPaused=1` and uses the compatible renderer, across restarts, until
+      the user re-enables it. The gear menu then says why it's off and offers
+      to retry. Updates close the app normally, so they don't trip it;
+    - each fallback is written to `error.log`;
+    - test hooks: `WEQ_TEST_FLIP=nodevice|devicelost`.
+  - **History:** a DPC_WATCHDOG_VIOLATION bugcheck happened on the
+    development PC while an earlier version of this renderer was being
+    stress-tested with rapid cover/minimize cycles. The kernel dump was
+    unreadable (`CORRUPT_MODULELIST`), and the graphics stack had been
+    abnormally slow beforehand (a clean reboot fixed that). The same PC's
+    NVIDIA driver also logs errors (event 153) while the compatible renderer
+    is in use, so the cause is still unknown. The crash guard above exists
+    so that, if it happens again, it can't repeat.
 - **CPU per frame:**
   - text layouts (`IDWriteTextLayout`) are cached by string, font, box and
     alignment, and evicted after about 48 unused frames;
@@ -182,12 +218,15 @@ the first ~40 s.
   - Routing keeps being ticked 4 times a second.
 - **`--bench out.txt [frames]`:** renders a test window with demo audio. It
   reports the CPU per frame with vsync off (plus settings-change and
-  curve-rebuild counts), and this process's GPU 3D-engine utilisation (PDH
-  counter) at the app's real frame rates with vsync on.
+  curve-rebuild counts), and the GPU 3D-engine utilisation (PDH counters) of
+  this process and of `dwm.exe` at the app's real frame rates with vsync on.
+  Each case first measures 3 s without drawing, the compositor's baseline.
+  The low-GPU renderer queues at most one frame, so its vsync-off rows are
+  capped at the display's refresh rate and don't compare.
 - **Diagnostics:** the registered window message `WindowsEQ.Diagnostics`
   answers `wParam 0` with the number of frames drawn so far. `wParam 1`
   returns flags: 1 = audio active, 2 = routing running, 4 = seen,
-  8 = foreground.
+  8 = foreground, 16 = low-GPU renderer drawing.
 - **Resource evaluation:** `tools/eval-resources.ps1` uses that message and the
   GPU counters to check five window states against targets: visible, covered
   by a normal window, covered by an opaque layered window, covered by a

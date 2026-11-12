@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.2.0 (2026-11-11)
+
+### Changed
+
+- **The low-GPU renderer is now the default.** It draws through a
+  flip-model swap chain that Windows' compositor reads directly, which cuts
+  total graphics use (the app plus the compositor) by about 60 % while the
+  analyzer runs. CPU use is unchanged.
+  - The previous renderer stays available as the **compatible** one: untick
+    gear menu → **Low-GPU renderer**. Windows EQ also switches to it by
+    itself on systems where low-GPU can't run.
+  - If you had turned low-GPU off before, that choice is kept.
+- **It protects itself:**
+  - it switches to the compatible renderer automatically if there's no
+    hardware Direct3D 11 graphics device, or if the graphics device is lost
+    twice within a minute;
+  - if Windows EQ ever closes abnormally while using it (a crash, a blue
+    screen, a power cut), it stays off until you turn it back on, and the
+    menu says why.
+- **Tools:**
+  - `WindowsEQ.exe --set-renderer flip|legacy` switches the renderer, also
+    in a running copy;
+  - `--bench` and `tools/eval-resources.ps1` now include the compositor's
+    GPU use, and the evaluation reports which renderer is drawing.
+
 ## 1.1.0 (2026-11-11)
 
 ### Added

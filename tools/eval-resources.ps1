@@ -40,7 +40,9 @@ function Raise-Eq {   # on top of other windows, without taking focus
 }
 Raise-Eq
 $fl = Flags
-"audio reaching the app: {0}   routing running: {1}" -f [bool]($fl -band 1), [bool]($fl -band 2)
+"audio reaching the app: {0}   routing running: {1}   renderer: {2}" -f [bool]($fl -band 1), [bool]($fl -band 2),
+    $(if ($fl -band 16) { 'low-GPU (flip model)' } else { 'compatible (window target)' })
+$dwmId = (Get-Process dwm -ErrorAction SilentlyContinue | Select-Object -First 1).Id
 if (-not ($fl -band 1)) { 'WARNING: no audio is reaching Windows EQ; the visible-phase numbers will show the idle rate.' }
 
 function Get-EqUsage([int]$seconds) {
@@ -48,14 +50,20 @@ function Get-EqUsage([int]$seconds) {
     $script:activeAtStart = [bool]((Flags) -band 8)
     $c0 = $p.TotalProcessorTime.TotalMilliseconds
     $f0 = Frames
-    $samples = Get-Counter -Counter "\GPU Engine(pid_$($procId)_*engtype_3D)\Utilization Percentage" `
-        -SampleInterval 1 -MaxSamples $seconds -ErrorAction SilentlyContinue
+    # The compositor (dwm.exe) is reported too: with the flip model it does
+    # the window's final copy, so that work doesn't show up under the app.
+    $eqPath = "\GPU Engine(pid_$($procId)_*engtype_3D)\Utilization Percentage"
+    $dwmPath = "\GPU Engine(pid_$($dwmId)_*engtype_3D)\Utilization Percentage"
+    $samples = Get-Counter -Counter @($eqPath, $dwmPath) -SampleInterval 1 -MaxSamples $seconds -ErrorAction SilentlyContinue
     $f1 = Frames
     $p.Refresh()
-    $gpu = (@(foreach ($s in $samples) { ($s.CounterSamples | Measure-Object CookedValue -Sum).Sum }) | Measure-Object -Average).Average
+    $sum = { param($pid_) (@(foreach ($s in $samples) {
+        ($s.CounterSamples | Where-Object Path -like "*pid_$($pid_)_*" | Measure-Object CookedValue -Sum).Sum
+    }) | Measure-Object -Average).Average }
     [pscustomobject]@{
         Fps = [math]::Round(($f1 - $f0) / $seconds, 1)
-        Gpu = [math]::Round([double]$gpu, 2)
+        Gpu = [math]::Round([double](& $sum $procId), 2)
+        Dwm = [math]::Round([double](& $sum $dwmId), 2)
         Cpu = [math]::Round(($p.TotalProcessorTime.TotalMilliseconds - $c0) / ($seconds * 10), 2)
         Audio = [bool]((Flags) -band 1)
         Active = $script:activeAtStart
@@ -91,7 +99,7 @@ function Phase($name, [scriptblock]$setup, [scriptblock]$teardown, [scriptblock]
     $m = Get-EqUsage 10
     & $teardown $state
     $ok = & $check $m
-    $script:results += [pscustomobject]@{ Phase = $name; FPS = $m.Fps; 'GPU %' = $m.Gpu; 'CPU %' = $m.Cpu
+    $script:results += [pscustomobject]@{ Phase = $name; FPS = $m.Fps; 'GPU %' = $m.Gpu; 'DWM GPU %' = $m.Dwm; 'CPU %' = $m.Cpu
         Audio = $m.Audio; Active = $m.Active; Target = $target; Result = $(if ($ok) { 'PASS' } else { 'FAIL' }) }
     Start-Sleep -Seconds 1
 }

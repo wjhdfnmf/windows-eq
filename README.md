@@ -34,7 +34,11 @@ rights to install.
   - a bit-exact passthrough when the EQ is flat;
   - about 2% of one CPU core in total;
   - a few percent of the GPU while the window is visible, and nothing at
-    all while it's hidden, covered or minimized.
+    all while it's hidden, covered or minimized;
+  - a **low-GPU renderer** that uses about 60 % less graphics power while
+    the analyzer runs. If your graphics driver has trouble with it, Windows
+    EQ switches to its compatible renderer by itself. You can also choose
+    that one in the gear menu (untick **Low-GPU renderer**).
 
 ## Requirements
 
@@ -161,6 +165,10 @@ Your settings live in `%APPDATA%\WindowsEQ`:
 - **Crackles or dropouts:** the status bar's **Dropouts** counter shows
   whether audio is being interrupted. The buffer grows by itself after a
   dropout.
+- **The window flickers, stays black or looks wrong:** untick gear menu →
+  **Low-GPU renderer** to use the compatible renderer. If the menu says the
+  low-GPU renderer is off and why, Windows EQ already switched by itself;
+  click it to try again.
 - **The app closed unexpectedly:** it writes a report to
   `%APPDATA%\WindowsEQ\crashes\` (`crash.log` plus a `.dmp` file).
   Non-fatal errors go to `%APPDATA%\WindowsEQ\error.log`. Please attach both
@@ -232,7 +240,8 @@ Scripts in `tools/`:
 | Script | What it does |
 |---|---|
 | `check-install.ps1` | Reports the state of an installed copy |
-| `eval-resources.ps1` | Checks the running app's frame rate, GPU and CPU in five window states. Play some audio first |
+| `eval-resources.ps1` | Checks the running app's frame rate, GPU (its own and the compositor's) and CPU in five window states. Play some audio first |
+| `renderer-state.ps1` | Shows the renderer settings, recent renderer log lines and recent graphics-driver events |
 | `zorder-check.ps1` | Shows which windows are above Windows EQ and whether they count as covering it |
 
 ## License

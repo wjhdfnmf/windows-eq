@@ -48,7 +48,17 @@ public:
     static constexpr UINT kMsgQuitAsk = WM_APP + 22;
     // Posted to the main window: the renderer setting changed.
     static constexpr UINT kMsgRendererChanged = WM_APP + 23;
+    // config.ini "renderer" when it isn't set: "flip" (low-GPU) or "legacy"
+    // (compatible). Low-GPU falls back to compatible by itself when needed.
+    static constexpr const wchar_t* kDefaultRenderer = L"flip";
     int showMenu(POINT screenPt, bool fromTray);
+    // The host reports which renderer is drawing, and why the low-GPU one
+    // is off this session if it was chosen but couldn't be used.
+    void setRendererStatus(bool lowGpuActive, const std::wstring& fallbackReason)
+    {
+        lowGpuActive_ = lowGpuActive;
+        lowGpuFallback_ = fallbackReason;
+    }
 
     // ---- benchmarks / previews
     // Feeds the analyzer synthetic music-like noise (run through the current
@@ -63,6 +73,8 @@ public:
     unsigned long long curveRebuilds() const { return curveRebuilds_; }
 
 private:
+    bool lowGpuActive_ = false;
+    std::wstring lowGpuFallback_;
     enum class Deferred { None, Import, Export, DeletePreset, ConfirmOverwrite, OpenSoundSettings, SettingsMenu };
     POINT settingsMenuPt_{};
 
