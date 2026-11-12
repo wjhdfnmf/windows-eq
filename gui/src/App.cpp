@@ -1067,10 +1067,16 @@ void App::drawToolbar(Ui& ui, Rect r)
                     switchAB(ui);
                 ui.setActive(0);
             }
-            const D2D1_COLOR_F fillC = active ? col::accent : hover ? col::fieldHover : col::field;
-            ui.fill(br, fillC, side == 0 ? 6.0f : 6.0f);
-            ui.text(side == 0 ? L"A" : L"B", br, active ? rgb(0x0B1420) : enabled ? col::text : col::textFaint,
-                    Font::Bold, Align::Center);
+            // Only B lights up; A active is just a quieter raised look.
+            const bool bright = active && side == 1;
+            const D2D1_COLOR_F fillC = bright ? col::accent
+                                       : active ? (hover ? col::borderHi : col::border)
+                                       : hover  ? col::fieldHover
+                                                : col::field;
+            ui.fill(br, fillC, 6.0f);
+            ui.text(side == 0 ? L"A" : L"B", br,
+                    bright ? rgb(0x0B1420) : active ? col::text : enabled ? col::textDim : col::textFaint, Font::Bold,
+                    Align::Center);
             if (hover)
                 ui.tooltip(!hasSnapshot_ ? L"A: your EQ (save a snapshot to compare with B)"
                                          : std::wstring(onB_ ? L"Hearing B" : L"Hearing A") +
@@ -1627,15 +1633,13 @@ void App::drawGraph(Ui& ui, Rect g)
             ui.setCursor(IDC_SIZEALL);
     }
 
-    // Which side of the A/B compare is active (only once a snapshot exists).
-    if (hasSnapshot_) {
-        const std::wstring label = onB_ ? L"B · snapshot from " + snapshotTime_ : L"A · your EQ";
+    // While comparing against the snapshot (B), say so on the graph.
+    if (onB_) {
+        const std::wstring label = L"B · snapshot from " + snapshotTime_;
         const float tw = ui.textWidth(label, Font::Bold) + 24;
         const Rect chip{g.x + 44, g.y + 10, tw, 24};
-        ui.fill(chip, onB_ ? withAlpha(col::accent, 0.9f) : rgb(0x232833, 0.92f), 12);
-        if (!onB_)
-            ui.stroke(chip, col::borderHi, 12);
-        ui.text(label, chip, onB_ ? rgb(0x0B1420) : col::text, Font::Bold, Align::Center);
+        ui.fill(chip, withAlpha(col::accent, 0.9f), 12);
+        ui.text(label, chip, rgb(0x0B1420), Font::Bold, Align::Center);
     }
 
     if (bypass_) {
