@@ -175,6 +175,7 @@ private:
     std::vector<float> curveL_, curveR_;
     std::vector<std::vector<float>> bandCurves_;
     std::vector<std::vector<float>> rangeCurves_; // dynamic bands at gain + range (else empty)
+    std::vector<double> colFreq_;                 // frequency of each curve sample column
     bool stereoDiffers_ = false;
     // Cached curve paths, rebuilt when the curves above or the graph's
     // geometry change (fills are built lazily for the selected band).

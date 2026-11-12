@@ -1062,6 +1062,7 @@ void App::updateCurves(Rect g)
         curveR_.assign(2, 0.0f);
         bandCurves_.assign(s_.numBands, std::vector<float>(2, 0.0f));
         rangeCurves_.assign(s_.numBands, {});
+        colFreq_.clear();
         curveW_ = -1;
         return;
     }
@@ -1089,8 +1090,11 @@ void App::updateCurves(Rect g)
         if (s_.bands[b].enabled && ((s_.bands[b].channelMask & 3u) != 3u))
             stereoDiffers_ = true;
     const double ratio = std::log(kFMax / kFMin);
+    colFreq_.resize(n);
+    for (int i = 0; i < n; ++i)
+        colFreq_[i] = kFMin * std::exp(ratio * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
     for (int i = 0; i < n; ++i) {
-        const double f = kFMin * std::exp(ratio * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
+        const double f = colFreq_[i];
         double l = 0, rr = 0;
         for (uint32_t b = 0; b < s_.numBands; ++b) {
             const double db = eqdsp::biquadMagnitudeDb(coeffs[b], f, fs);
@@ -1115,10 +1119,8 @@ void App::updateCurves(Rect g)
         full.gainDb += full.rangeDb;
         const eqdsp::BiquadCoeffs c = eqdsp::designBiquad(full, fs);
         rangeCurves_[b].resize(n);
-        for (int i = 0; i < n; ++i) {
-            const double f = kFMin * std::exp(ratio * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
-            rangeCurves_[b][i] = static_cast<float>(eqdsp::biquadMagnitudeDb(c, f, fs));
-        }
+        for (int i = 0; i < n; ++i)
+            rangeCurves_[b][i] = static_cast<float>(eqdsp::biquadMagnitudeDb(c, colFreq_[i], fs));
     }
 }
 
@@ -1256,6 +1258,27 @@ void App::drawGraph(Ui& ui, Rect g)
         geoL_ = makePath(ui.factory(), curvePts(curveL_), false);
         geoR_ = stereoDiffers_ ? makePath(ui.factory(), curvePts(curveR_), false) : nullptr;
     }
+    // Live curves of dynamic bands that are moving right now (empty = at rest).
+    // One filter design plus one response evaluation per column per moving
+    // band, about 0.05 ms each; everything else stays cached.
+    std::vector<std::vector<float>> liveBand(s_.numBands);
+    bool anyMoving = false;
+    if (!bypass_ && n > 1 && static_cast<int>(colFreq_.size()) == n) {
+        const double fs = sampleRate();
+        for (uint32_t b = 0; b < s_.numBands && b < bandCurves_.size(); ++b) {
+            const double change = liveDynGain(static_cast<int>(b));
+            if (std::fabs(change) <= 0.05)
+                continue;
+            Band now = s_.bands[b];
+            now.gainDb += change;
+            const eqdsp::BiquadCoeffs c = eqdsp::designBiquad(now, fs);
+            liveBand[b].resize(n);
+            for (int i = 0; i < n; ++i)
+                liveBand[b][i] = static_cast<float>(eqdsp::biquadMagnitudeDb(c, colFreq_[i], fs));
+            anyMoving = true;
+        }
+    }
+
     for (uint32_t b = 0; b < s_.numBands && b < bandGeo_.size(); ++b) {
         const bool selected = static_cast<int>(b) == sel_;
         if (!s_.bands[b].enabled && !selected)
@@ -1263,6 +1286,23 @@ void App::drawGraph(Ui& ui, Rect g)
         const D2D1_COLOR_F c = bandColor(static_cast<int>(b));
         if (bandGeo_[b].range && s_.bands[b].enabled)
             ui.rt()->FillGeometry(bandGeo_[b].range.Get(), ui.brush(withAlpha(c, selected ? 0.22f : 0.12f)));
+        const D2D1_COLOR_F lineColor = withAlpha(c, selected ? 0.9f : 0.35f);
+        const float lineWidth = selected ? 1.5f : 1.0f;
+
+        if (!liveBand[b].empty()) {
+            // Dynamic band in motion: draw it where it is right now.
+            auto pts = curvePts(liveBand[b]);
+            if (selected) {
+                auto area = pts;
+                area.push_back(D2D1::Point2F(g.r(), y0));
+                area.push_back(D2D1::Point2F(g.x, y0));
+                if (auto fillGeo = makePath(ui.factory(), area, true))
+                    ui.rt()->FillGeometry(fillGeo.Get(), ui.brush(withAlpha(c, 0.16f)));
+            }
+            if (auto lineGeo = makePath(ui.factory(), pts, false))
+                ui.rt()->DrawGeometry(lineGeo.Get(), ui.brush(withAlpha(c, selected ? 0.95f : 0.6f)), lineWidth);
+            continue;
+        }
         if (selected) {
             if (!bandGeo_[b].fill) {
                 auto area = curvePts(bandCurves_[b]);
@@ -1274,8 +1314,8 @@ void App::drawGraph(Ui& ui, Rect g)
                 ui.rt()->FillGeometry(bandGeo_[b].fill.Get(), ui.brush(withAlpha(c, 0.16f)));
         }
         if (bandGeo_[b].line)
-            ui.rt()->DrawGeometry(bandGeo_[b].line.Get(), ui.brush(withAlpha(c, selected ? 0.9f : 0.35f)),
-                                  selected ? 1.5f : 1.0f, s_.bands[b].enabled ? nullptr : ui.dashed());
+            ui.rt()->DrawGeometry(bandGeo_[b].line.Get(), ui.brush(lineColor), lineWidth,
+                                  s_.bands[b].enabled ? nullptr : ui.dashed());
     }
     const float curveAlpha = bypass_ ? 0.35f : 1.0f;
     if (stereoDiffers_ && geoR_)
@@ -1287,29 +1327,14 @@ void App::drawGraph(Ui& ui, Rect g)
 
     // Live response: while dynamic bands are moving, draw the EQ as it is
     // right now (static curve plus each dynamic band's current change).
-    if (!bypass_ && n > 1) {
-        std::vector<std::pair<int, double>> moving;
-        for (uint32_t b = 0; b < s_.numBands; ++b) {
-            const double live = liveDynGain(static_cast<int>(b));
-            if (std::fabs(live) > 0.05 && (s_.bands[b].channelMask & 1u))
-                moving.push_back({static_cast<int>(b), live});
-        }
-        if (!moving.empty()) {
-            const double fs = sampleRate();
-            const double lr = std::log(kFMax / kFMin);
-            std::vector<float> live = curveL_;
-            for (const auto& [b, change] : moving) {
-                Band now = s_.bands[b];
-                now.gainDb += change;
-                const eqdsp::BiquadCoeffs c = eqdsp::designBiquad(now, fs);
-                for (int i = 0; i < n; ++i) {
-                    const double f = kFMin * std::exp(lr * std::min(1.0, static_cast<double>(i * kColStep / g.w)));
-                    live[i] += static_cast<float>(eqdsp::biquadMagnitudeDb(c, f, fs)) - bandCurves_[b][i];
-                }
-            }
-            if (auto geo = makePath(ui.factory(), curvePts(live), false))
-                ui.rt()->DrawGeometry(geo.Get(), ui.brush(withAlpha(col::accentHi, 0.95f)), 1.8f, ui.roundCap());
-        }
+    if (anyMoving) {
+        std::vector<float> live = curveL_;
+        for (uint32_t b = 0; b < s_.numBands; ++b)
+            if (!liveBand[b].empty() && (s_.bands[b].channelMask & 1u))
+                for (int i = 0; i < n; ++i)
+                    live[i] += liveBand[b][i] - bandCurves_[b][i];
+        if (auto geo = makePath(ui.factory(), curvePts(live), false))
+            ui.rt()->DrawGeometry(geo.Get(), ui.brush(withAlpha(col::accentHi, 0.95f)), 1.8f, ui.roundCap());
     }
 
     // ---- nodes + interaction

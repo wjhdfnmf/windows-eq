@@ -12,8 +12,9 @@
     negative cuts, positive boosts), **Attack** and **Release**, with a 6 dB
     soft knee.
   - **On the graph:** a shaded area shows how far each dynamic band can move.
-    A live marker and a bright curve show what the EQ is doing right now. The
-    band editor has a live **NOW** meter.
+    The band's own curve and fill move live with the dynamics, over the
+    spectrum. A live marker and a bright overall curve show what the EQ is
+    doing right now. The band editor has a live **NOW** meter.
   - **New built-in presets:** *De-esser (dynamic)*, *Tame harshness
     (dynamic)*, *Dynamic loudness*.
   - **Preset files:** dynamic settings are saved as `# WindowsEQ Dynamic …`
