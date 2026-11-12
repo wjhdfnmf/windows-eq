@@ -1267,6 +1267,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         return renderToPng(argv[2], w, h, secs, mx, my, !hasArg(argc, argv, L"--demo"));
     }
     g.useFlip = flipRendererConfigured();
+    if (argc >= 3 && _wcsicmp(argv[1], L"--self-test") == 0) {
+        // Logic self-tests (no window, no audio devices); report to a file.
+        if (!initGraphics())
+            return 2;
+        g.appReady = g.app.init(nullptr, false);
+        std::wstring report;
+        const bool ok = g.app.selfTestSnapshot(g.ui, report);
+        FILE* f = nullptr;
+        if (_wfopen_s(&f, argv[2], L"w, ccs=UTF-8") == 0 && f) {
+            fputws(report.c_str(), f);
+            fclose(f);
+        }
+        return ok ? 0 : 1;
+    }
     if (argc >= 3 && _wcsicmp(argv[1], L"--bench") == 0) {
         if (!initGraphics())
             return 2;

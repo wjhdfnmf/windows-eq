@@ -75,6 +75,9 @@ rights to install.
 | Double-click a band | Reset its gain to 0 dB |
 | Drag, scroll or click a number field | Edit it (typing `1.5k` works) |
 | `B` | EQ on / bypassed |
+| Camera icon in the toolbar | Save a snapshot of the current EQ (kept until you close the app) |
+| Circular-arrow icon next to it | Load the snapshot as your EQ (Ctrl+Z undoes) |
+| **A / B** buttons | Switch between your EQ (A) and the snapshot (B) to compare. Each keeps its own edits |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Delete` | Remove the selected band |
 | `F12` | Show frame timings |

@@ -72,6 +72,21 @@ std::wstring fmt(const wchar_t* f, double v)
     return b;
 }
 
+// A button that collapses to just its icon (label as tooltip) when narrow.
+bool compactButton(Ui& ui, Id id, Rect r, const std::wstring& label, Btn style, bool enabled, const wchar_t* icon)
+{
+    if (r.w <= r.h + 1)
+        return ui.iconButton(id, r, icon, label, enabled);
+    return ui.button(id, r, label, style, enabled, icon);
+}
+
+std::wstring localTimeText()
+{
+    wchar_t b[64] = L"";
+    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, nullptr, nullptr, b, 64);
+    return b;
+}
+
 } // namespace
 
 double App::rangeDb() const { return kRanges[std::clamp(rangeSel_, 0, 3)]; }
@@ -996,14 +1011,13 @@ void App::drawToolbar(Ui& ui, Rect r)
     x += h + 10;
     ui.line(x, y + 6, x, y + h - 6, col::border);
     x += 10;
-    if (ui.button(makeId("import"), Rect{x, y, 92, h}, L"Import", Btn::Ghost, true, L""))
+    if (compactButton(ui, makeId("import"), Rect{x, y, h, h},
+                      L"Import an AutoEQ ParametricEQ.txt or Equalizer APO config", Btn::Ghost, true,L""))
         deferred_ = Deferred::Import;
-    if (ui.over(Rect{x, y, 92, h}))
-        ui.tooltip(L"Import an AutoEQ ParametricEQ.txt or Equalizer APO config");
-    x += 94;
-    if (ui.button(makeId("export"), Rect{x, y, 92, h}, L"Export", Btn::Ghost, true, L""))
+    x += h + 2;
+    if (compactButton(ui, makeId("export"), Rect{x, y, h, h}, L"Export this EQ to a file", Btn::Ghost, true,L""))
         deferred_ = Deferred::Export;
-    x += 100;
+    x += h + 10;
     ui.line(x, y + 6, x, y + h - 6, col::border);
     x += 10;
     if (ui.iconButton(makeId("undo"), Rect{x, y, h, h}, L"", L"Undo (Ctrl+Z)", !undo_.empty()))
@@ -1011,8 +1025,57 @@ void App::drawToolbar(Ui& ui, Rect r)
     x += h + 2;
     if (ui.iconButton(makeId("redo"), Rect{x, y, h, h}, L"", L"Redo (Ctrl+Y)", !redo_.empty()))
         redo();
+    x += h + 10;
+    ui.line(x, y + 6, x, y + h - 6, col::border);
+    x += 10;
 
-    // Right side: view options.
+    // Snapshot (this session only): save, load, and A/B compare.
+    if (ui.iconButton(makeId("snapsave"), Rect{x, y, h, h}, L"",
+                      onB_ ? L"Switch to A to take a new snapshot"
+                           : hasSnapshot_ ? L"Save a new snapshot of this EQ (replaces the one from " + snapshotTime_ + L")"
+                                          : L"Save a snapshot of this EQ to compare against (kept until you close the app)",
+                      !onB_))
+        saveSnapshot(ui);
+    x += h + 2;
+    if (ui.iconButton(makeId("snapload"), Rect{x, y, h, h}, L"",
+                      hasSnapshot_ ? L"Load the snapshot from " + snapshotTime_ + L" as your EQ (Ctrl+Z undoes)"
+                                   : L"Load snapshot (save one first)",
+                      hasSnapshot_ && !onB_))
+        loadSnapshot(ui);
+    x += h + 6;
+    {
+        // A | B segmented switch.
+        const float sw = 28;
+        for (int side = 0; side < 2; ++side) {
+            const Rect br{x + side * sw, y, sw, h};
+            const bool active = (side == 1) == onB_;
+            const bool enabled = side == 0 || hasSnapshot_;
+            const Id id = makeId("snapab", side);
+            const bool hover = enabled && ui.over(br) && (ui.active() == 0 || ui.active() == id);
+            if (hover && ui.in.pressed)
+                ui.setActive(id);
+            if (ui.active() == id && ui.in.released) {
+                if (hover && !active)
+                    switchAB(ui);
+                ui.setActive(0);
+            }
+            const D2D1_COLOR_F fillC = active ? col::accent : hover ? col::fieldHover : col::field;
+            ui.fill(br, fillC, side == 0 ? 6.0f : 6.0f);
+            ui.text(side == 0 ? L"A" : L"B", br, active ? rgb(0x0B1420) : enabled ? col::text : col::textFaint,
+                    Font::Bold, Align::Center);
+            if (hover)
+                ui.tooltip(side == 0 ? L"A: your EQ"
+                                     : L"B: the snapshot from " + snapshotTime_ + L" (edits here change the snapshot)");
+        }
+        ui.stroke(Rect{x, y, 2 * sw, h}, onB_ ? col::accent : col::border, 6);
+        x += 2 * sw;
+    }
+    const float leftEnd = x + 12;
+
+    // Right side: view options (narrower when the window is narrow).
+    const float avail = r.r() - leftEnd;
+    const float resetW = avail >= 394 ? 78.0f : h;
+    const float anaW = std::clamp(avail - 104 - 8 - 8 - resetW, 110.0f, 196.0f);
     float rx = r.r();
     const Rect rangeR{rx - 104, y, 104, h};
     static const std::vector<std::wstring> ranges = {L"±6 dB", L"±12 dB", L"±18 dB", L"±24 dB"};
@@ -1021,21 +1084,105 @@ void App::drawToolbar(Ui& ui, Rect r)
         rangeSel_ = rs;
     rx = rangeR.x - 8;
     static const std::vector<std::wstring> modes = {L"Before + after", L"After EQ only", L"Off"};
-    const Rect anaR{rx - 196, y, 196, h};
+    const Rect anaR{rx - anaW, y, anaW, h};
     int am = analyzerMode_;
     if (ui.combo(makeId("analyzer"), anaR, modes, am, L"", L"Analyzer: ")) {
         analyzerMode_ = am;
         analyzer_.clear();
     }
     rx = anaR.x - 8;
-    if (ui.button(makeId("reset"), Rect{rx - 78, y, 78, h}, L"Reset", Btn::Ghost, s_.numBands > 0 || s_.preampDb != 0,
+    if (compactButton(ui, makeId("reset"), Rect{rx - resetW, y, resetW, h}, L"Reset", Btn::Ghost,
+                      s_.numBands > 0 || s_.preampDb != 0,
                   L"")) {
         s_ = EqSettings{};
         sel_ = -1;
         presetName_ = L"Flat";
     }
-    if (ui.over(Rect{rx - 78, y, 78, h}))
-        ui.tooltip(L"Remove all bands and set the preamp to 0 dB");
+    if (ui.over(Rect{rx - resetW, y, resetW, h}))
+        ui.tooltip(L"Reset: remove all bands and set the preamp to 0 dB");
+}
+
+// ---- session snapshot (A = your EQ, B = the snapshot; not saved to disk)
+
+void App::saveSnapshot(Ui&)
+{
+    otherSlot_ = s_;
+    otherUndo_.clear();
+    otherRedo_.clear();
+    otherPresetName_ = presetName_;
+    otherModified_ = modified_;
+    hasSnapshot_ = true;
+    snapshotTime_ = localTimeText();
+}
+
+void App::loadSnapshot(Ui&)
+{
+    if (!hasSnapshot_ || onB_)
+        return;
+    // The click's undo step is recorded by the frame's gesture bookkeeping.
+    s_ = otherSlot_;
+    sel_ = std::min(sel_, static_cast<int>(s_.numBands) - 1);
+    frameStart_ = s_;
+    onSettingsChanged();
+    presetName_ = otherPresetName_;
+    modified_ = otherModified_;
+    syncPresetSelection();
+}
+
+void App::switchAB(Ui&)
+{
+    if (!hasSnapshot_)
+        return;
+    // Swap the two EQs along with their own undo history and preset label.
+    std::swap(s_, otherSlot_);
+    std::swap(undo_, otherUndo_);
+    std::swap(redo_, otherRedo_);
+    std::swap(presetName_, otherPresetName_);
+    std::swap(modified_, otherModified_);
+    onB_ = !onB_;
+    sel_ = std::min(sel_, static_cast<int>(s_.numBands) - 1);
+    frameStart_ = s_;   // not an edit: no undo step,
+    gestureBase_ = s_;  // not even for the click that did it
+    publish();
+    saveIn_ = 0.3;
+    syncPresetSelection();
+}
+
+bool App::selfTestSnapshot(Ui& ui, std::wstring& report)
+{
+    int failures = 0;
+    auto check = [&](bool ok, const wchar_t* what) {
+        report += std::wstring(ok ? L"  ok   " : L"  FAIL ") + what + L"\n";
+        failures += ok ? 0 : 1;
+    };
+    EqSettings original = s_;
+    original.numBands = 1;
+    original.bands[0] = Band{};
+    original.bands[0].gainDb = 3.0;
+    s_ = original;
+
+    saveSnapshot(ui);
+    check(hasSnapshot_ && !onB_, L"save: snapshot exists, still on A");
+    check(sameSettings(otherSlot_, original), L"save: snapshot equals the EQ at that moment");
+
+    s_.bands[0].gainDb = -6.0; // edit A after the snapshot
+    const EqSettings editedA = s_;
+    switchAB(ui);
+    check(onB_ && sameSettings(s_, original), L"A->B: hearing the snapshot");
+    s_.bands[0].frequencyHz = 2500.0; // edit B
+    const EqSettings editedB = s_;
+    switchAB(ui);
+    check(!onB_ && sameSettings(s_, editedA), L"B->A: A kept its edit");
+    switchAB(ui);
+    check(onB_ && sameSettings(s_, editedB), L"A->B: B kept its edit");
+    loadSnapshot(ui); // not allowed on B
+    check(onB_ && sameSettings(s_, editedB), L"load is ignored while on B");
+    switchAB(ui);
+    loadSnapshot(ui);
+    check(!onB_ && sameSettings(s_, editedB), L"load on A: A becomes the snapshot");
+    check(sameSettings(otherSlot_, editedB), L"load keeps the snapshot");
+    report += failures ? L"snapshot self-test FAILED\n" : L"snapshot self-test passed\n";
+    return failures == 0;
 }
 
 void App::drawBanner(Ui& ui, Rect r)
@@ -1468,6 +1615,17 @@ void App::drawGraph(Ui& ui, Rect g)
         ui.tooltip(tip);
         if (dragNode_ < 0)
             ui.setCursor(IDC_SIZEALL);
+    }
+
+    // Which side of the A/B compare is active (only once a snapshot exists).
+    if (hasSnapshot_) {
+        const std::wstring label = onB_ ? L"B · snapshot from " + snapshotTime_ : L"A · your EQ";
+        const float tw = ui.textWidth(label, Font::Bold) + 24;
+        const Rect chip{g.x + 44, g.y + 10, tw, 24};
+        ui.fill(chip, onB_ ? withAlpha(col::accent, 0.9f) : rgb(0x232833, 0.92f), 12);
+        if (!onB_)
+            ui.stroke(chip, col::borderHi, 12);
+        ui.text(label, chip, onB_ ? rgb(0x0B1420) : col::text, Font::Bold, Align::Center);
     }
 
     if (bypass_) {

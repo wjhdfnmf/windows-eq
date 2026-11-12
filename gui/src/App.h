@@ -55,6 +55,8 @@ public:
     // EQ for the "after" trace) instead of the router's audio.
     void setDemoSignal(bool on) { demoSignal_ = on; }
     void setAnalyzerMode(int mode) { analyzerMode_ = mode; }
+    // Self-test of the snapshot / A-B logic; returns false and explains on failure.
+    bool selfTestSnapshot(Ui& ui, std::wstring& report);
     // Benchmark: skip drawing sections (bit 0 graph, 1 side, 2 bands, 3 bars).
     void setBenchSkip(unsigned mask) { benchSkip_ = mask; }
     unsigned long long settingsChanges() const { return settingsChanges_; }
@@ -102,6 +104,17 @@ private:
     void updateCurves(Rect g);
 
     HWND hwnd_ = nullptr;
+
+    // Session snapshot / A-B compare (memory only). s_ is whichever is active;
+    // otherSlot_ holds the other one, with its own undo history and label.
+    bool hasSnapshot_ = false, onB_ = false;
+    eqdsp::EqSettings otherSlot_{};
+    std::vector<eqdsp::EqSettings> otherUndo_, otherRedo_;
+    std::wstring otherPresetName_, snapshotTime_;
+    bool otherModified_ = false;
+    void saveSnapshot(Ui& ui);
+    void loadSnapshot(Ui& ui);
+    void switchAB(Ui& ui);
 
     // demo signal (benchmarks, previews)
     bool demoSignal_ = false;

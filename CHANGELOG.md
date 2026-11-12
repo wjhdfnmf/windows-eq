@@ -21,6 +21,15 @@
     comment lines, so the files still work in Equalizer APO and AutoEQ tools,
     which ignore them.
 - **Auto preamp:** now accounts for dynamic bands that can boost.
+- **Snapshot and A/B compare (this session):**
+  - **Save snapshot** (camera icon) keeps a copy of the current EQ.
+  - **Load snapshot** makes it the current EQ; Ctrl+Z undoes this.
+  - **A / B** switches instantly between your EQ (A) and the snapshot (B).
+    Each side keeps its own edits and undo history.
+  - A chip on the graph shows which side you're hearing.
+  - Snapshots last until you close the app.
+- **Toolbar:** Import and Export are now icon buttons. On narrow windows,
+  Reset and the analyzer menu shrink to fit.
 
 ### Quality
 
